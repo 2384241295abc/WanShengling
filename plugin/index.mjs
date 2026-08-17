@@ -176,17 +176,17 @@ export function apply(ctx, rawConfig = {}) {
       const persona = buildPersonaPrompt(gcfg)
       const content = []
       if (persona) content.push({ type: 'text', text: persona })
-      // 成员认知：让机器人认识群里的人（昵称/印象/发言次数）
+      // 成员认知：群聊注入（昵称/印象/发言次数）
       if (isGroup) {
         const mctx = members.buildContext(qqKey, selfId)
         if (mctx) content.push({ type: 'text', text: mctx })
-        // 友好度认知：告诉万生玲与当前发言者的熟悉度
-        const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
-        if (fctx) content.push({ type: 'text', text: fctx })
         // 讨论环境提示：让万生玲发言更符合"多人讨论"氛围
         const dctx = discussion.getContext(qqKey)
         if (dctx) content.push({ type: 'text', text: dctx })
       }
+      // 友好度认知：群聊+私聊都注入 —— 按与对方的熟悉度调整语气
+      const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
+      if (fctx) content.push({ type: 'text', text: fctx })
       if (isGroup && gcfg.energy?.enabled) {
         const gctx = energy.getContext(qqKey)
         if (gctx) content.push({ type: 'text', text: gctx })
@@ -222,9 +222,15 @@ export function apply(ctx, rawConfig = {}) {
               log('info', '[qq-bridge] 群 %s 已回复，能量重置为 %d', qqKey, e)
             }
           }
-          // 万生玲发言：标记友好度结算点（等后5句到齐后结算）
+          // 万生玲发言：群聊标记友好度结算点（等后5句到齐后结算）
           if (isGroup) {
             friends.markReply(qqKey, selfId)
+          } else {
+            // 私聊：回复后对方友好度 +1（聊多了变熟）
+            if (msg.user_id) {
+              friends.add(String(msg.user_id), 1)
+              log('info', '[qq-bridge] 私聊回复，用户 %s 友好度 +1 → %d', msg.user_id, friends.get(msg.user_id))
+            }
           }
           return
         }
