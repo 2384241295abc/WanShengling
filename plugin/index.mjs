@@ -193,8 +193,11 @@ export function apply(ctx, rawConfig = {}) {
     }
 
     // 私聊工作指令：以 workPrefix 开头 → 真实 DSH 代理（不注入人设，独立会话）
-    if (!isGroup && config.workPrefix && text.startsWith(config.workPrefix)) {
-      const workText = text.slice(config.workPrefix.length).trim()
+    // 兼容全角 ！(手机输入法常自动转全角)
+    const workPrefixes = [config.workPrefix, config.workPrefix === '!' ? '！' : ''].filter(Boolean)
+    const wp = workPrefixes.find((p) => text.startsWith(p))
+    if (!isGroup && wp) {
+      const workText = text.slice(wp.length).trim()
       if (!workText) return
       try {
         const workQqKey = `qq-work-${msg.user_id ?? '?'}`
