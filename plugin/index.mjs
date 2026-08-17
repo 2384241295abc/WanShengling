@@ -143,6 +143,8 @@ export function apply(ctx, rawConfig = {}) {
     // 按群配置：人设/风格/工作目录/目录外权限
     const gcfg = groups.get(qqKey)
     const isGroup = msg.message_type === 'group'
+    // 工作指令白名单：空=全部允许；非空=仅列表内用户可用（其他用户只聊天，禁文件访问）
+    const allowWork = !config.workUsers?.length || config.workUsers.includes(String(msg.user_id ?? ''))
 
     // 群聊：观察成员发言 + 友好度窗口记录 + @加友好度 + 讨论触发检查 + 结算检查
     if (isGroup) {
@@ -197,6 +199,12 @@ export function apply(ctx, rawConfig = {}) {
     const workPrefixes = [config.workPrefix, config.workPrefix === '!' ? '！' : ''].filter(Boolean)
     const wp = workPrefixes.find((p) => text.startsWith(p))
     if (!isGroup && wp) {
+      // 权限收束：非白名单用户拒绝工作指令（不创建会话、不触碰文件）
+      if (!allowWork) {
+        await bot.sendText(target, '⚠️ 你没有使用工作指令的权限').catch(() => {})
+        log('warn', '[qq-bridge] 用户 %s 工作指令被拒绝: %s', msg.user_id, text.slice(0, 40))
+        return
+      }
       const workText = text.slice(wp.length).trim()
       if (!workText) return
       try {
@@ -248,6 +256,10 @@ export function apply(ctx, rawConfig = {}) {
         ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
         : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
       content.push({ type: 'text', text: scopeNote })
+      // 权限收束：非白名单用户只聊天，禁止触碰本机文件
+      if (!allowWork) {
+        content.push({ type: 'text', text: '（安全约束：你仅作为万生玲聊天。禁止调用任何工具，禁止读取、写入、执行本机任何文件。）' })
+      }
 
       // 异步入队（accepted 即返回；回复走事件流）
       await promptQueue(sessionId, content, target, text || '（对方@了你）')
