@@ -143,6 +143,8 @@ export function apply(ctx, rawConfig = {}) {
     // 按群配置：人设/风格/工作目录/目录外权限
     const gcfg = groups.get(qqKey)
     const isGroup = msg.message_type === 'group'
+    // 忽略群系统消息（进群欢迎等，形如"欢迎新人~"+管理提示），万生玲不接话、不耗能量
+    if (isGroup && /^欢迎新人/.test(text.trim())) return
     // 工作指令白名单：空=全部允许；非空=仅列表内用户可用（其他用户只聊天，禁文件访问）
     const allowWork = !config.workUsers?.length || config.workUsers.includes(String(msg.user_id ?? ''))
 

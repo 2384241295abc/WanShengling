@@ -32,8 +32,16 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
     return list.length
   }
 
+  /** 发送前清洗模型偶发的 <system-reminder> 模仿尾巴（DSH 运行时注入格式被模型回显） */
+  function sanitize(text) {
+    return text
+      .replace(/<system-reminder>[\s\S]*?(<\/system-reminder>|$)/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+  }
+
   async function flush(buf, done, reason) {
-    const text = buf.steps.join('\n\n').trim() || buf.chunks.join('').trim()
+    const text = sanitize(buf.steps.join('\n\n').trim() || buf.chunks.join('').trim())
     if (!text) return
     if (done) {
       for (let i = 0; i < text.length; i += maxChunkLength) {
