@@ -12,6 +12,9 @@
 
 'use strict'
 
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+
 /** 全局默认配置（所有群/私聊继承的基础值） */
 export const DEFAULTS = {
   onebotWs: 'ws://127.0.0.1:6700',
@@ -28,6 +31,10 @@ export const DEFAULTS = {
   replyStyle: 'default',       // 'default' | 'short' | 'detailed' | 'casual' | 'emoji' | 'serious'
   allowOutside: false,         // 是否允许读取工作目录外文件
   workdir: '',                 // 全局默认工作目录（空=每群自动生成）
+
+  // 私聊工作指令：以 workPrefix 开头 → 真实 DSH 代理（不注入人设）
+  workPrefix: '!',             // 前缀（如 "!查看 DshDesktop 目录"）
+  workCwd: '',                 // 工作模式 cwd（空=默认 ~/Documents/DshDesktop）
 
   // 群聊能量阈值机制（仅群聊生效；私聊不走）
   energy: {
@@ -55,5 +62,7 @@ export function resolveConfig(rawConfig = {}) {
       ...(rawConfig.energy || {}),
     },
     groups: rawConfig.groups || DEFAULTS.groups,
+    // 工作模式 cwd 默认 ~/Documents/DshDesktop
+    workCwd: rawConfig.workCwd || DEFAULTS.workCwd || join(homedir(), 'Documents', 'DshDesktop'),
   }
 }

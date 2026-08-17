@@ -101,6 +101,34 @@ export function apply(ctx, rawConfig = {}) {
   /** qqKey -> 群成员数（同步成员列表时记录，供讨论触发判定） */
   const memberCounts = new Map()
 
+  /**
+   * 异步入队（accepted 即返回；回复走事件流）。带 rpcId（契约要求）+ 对瞬时拒绝重试。
+   * @returns {Promise<void>} 入队成功；否则抛错
+   */
+  async function promptQueue(sessionId, content, target, label) {
+    let lastErr = null
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { result } = await ctx.apiProxy.sessions.prompt({
+        rpcId: randomUUID(),
+        payload: {
+          sessionId, mode: 'queue',
+          content,
+        },
+      })
+      if (result.ok) {
+        reply.enqueue(sessionId, target)
+        log('info', '[qq-bridge] queued "%s" -> %s', label.slice(0, 40), sessionId)
+        return
+      }
+      lastErr = result.error
+      const retryable = lastErr?.code === 'model-unavailable' || lastErr?.code === 'agent-busy' || lastErr?.code === 'session-not-found'
+      if (!retryable || attempt === 2) break
+      log('warn', '[qq-bridge] prompt %s (attempt %d)，重试…', lastErr?.code, attempt + 1)
+      await new Promise((r) => setTimeout(r, 800))
+    }
+    throw new Error(`${lastErr?.code || 'unknown'}: ${lastErr?.message || JSON.stringify(lastErr) || 'prompt rejected'}`)
+  }
+
   async function onQqMessage(msg) {
     const text = OneBotClient.extractText(msg.message)
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
@@ -164,6 +192,26 @@ export function apply(ctx, rawConfig = {}) {
       log('info', '[qq-bridge] 群 %s 触发回复（能量 %d）', qqKey, energy.getEnergy(qqKey))
     }
 
+    // 私聊工作指令：以 workPrefix 开头 → 真实 DSH 代理（不注入人设，独立会话）
+    if (!isGroup && config.workPrefix && text.startsWith(config.workPrefix)) {
+      const workText = text.slice(config.workPrefix.length).trim()
+      if (!workText) return
+      try {
+        const workQqKey = `qq-work-${msg.user_id ?? '?'}`
+        const workCwd = config.workCwd || process.cwd()
+        const sessionId = await sessions.ensure(workQqKey, workCwd)
+        const content = [
+          { type: 'text', text: workText },
+          { type: 'text', text: `（注意：本会话工作目录为 ${workCwd}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）` },
+        ]
+        await promptQueue(sessionId, content, target, workText)
+      } catch (err) {
+        log('warn', '[qq-bridge] 工作指令失败: %s', err.message)
+        await bot.sendText(target, `⚠️ 出错了：${err.message}`).catch(() => {})
+      }
+      return
+    }
+
     try {
       // 会话：cwd 与群配置一致才复用，否则归档重建
       const sessionId = await sessions.ensure(qqKey, gcfg.workdir)
@@ -198,49 +246,30 @@ export function apply(ctx, rawConfig = {}) {
         : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
       content.push({ type: 'text', text: scopeNote })
 
-      // 异步入队（accepted 即返回；回复走事件流）。带 rpcId（契约要求）+ 对瞬时拒绝重试。
-      let lastErr = null
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const { result } = await ctx.apiProxy.sessions.prompt({
-          rpcId: randomUUID(),
-          payload: {
-            sessionId, mode: 'queue',
-            content,
-          },
-        })
-        if (result.ok) {
-          reply.enqueue(sessionId, target)
-          log('info', '[qq-bridge] queued "%s" -> %s', text.slice(0, 40), sessionId)
-          // 群聊：回复已入队，重置能量（开始下一轮衰减）
-          if (isGroup && gcfg.energy?.enabled) {
-            if (discussion.isActive(qqKey)) {
-              // 讨论模式：每次回复后能量重置 30~60
-              discussion.onReply(qqKey)
-              log('info', '[qq-bridge] 群 %s 讨论中回复，能量已重置', qqKey)
-            } else {
-              const e = energy.reset(qqKey)
-              log('info', '[qq-bridge] 群 %s 已回复，能量重置为 %d', qqKey, e)
-            }
-          }
-          // 万生玲发言：群聊标记友好度结算点（等后5句到齐后结算）
-          if (isGroup) {
-            friends.markReply(qqKey, selfId)
-          } else {
-            // 私聊：回复后对方友好度 +1（聊多了变熟）
-            if (msg.user_id) {
-              friends.add(String(msg.user_id), 1)
-              log('info', '[qq-bridge] 私聊回复，用户 %s 友好度 +1 → %d', msg.user_id, friends.get(msg.user_id))
-            }
-          }
-          return
+      // 异步入队（accepted 即返回；回复走事件流）
+      await promptQueue(sessionId, content, target, text || '（对方@了你）')
+      // 群聊：回复已入队，重置能量（开始下一轮衰减）
+      if (isGroup && gcfg.energy?.enabled) {
+        if (discussion.isActive(qqKey)) {
+          // 讨论模式：每次回复后能量重置 30~60
+          discussion.onReply(qqKey)
+          log('info', '[qq-bridge] 群 %s 讨论中回复，能量已重置', qqKey)
+        } else {
+          const e = energy.reset(qqKey)
+          log('info', '[qq-bridge] 群 %s 已回复，能量重置为 %d', qqKey, e)
         }
-        lastErr = result.error
-        const retryable = lastErr?.code === 'model-unavailable' || lastErr?.code === 'agent-busy' || lastErr?.code === 'session-not-found'
-        if (!retryable || attempt === 2) break
-        log('warn', '[qq-bridge] prompt %s (attempt %d)，重试…', lastErr?.code, attempt + 1)
-        await new Promise((r) => setTimeout(r, 800))
       }
-      throw new Error(`${lastErr?.code || 'unknown'}: ${lastErr?.message || JSON.stringify(lastErr) || 'prompt rejected'}`)
+      // 万生玲发言：群聊标记友好度结算点（等后5句到齐后结算）
+      if (isGroup) {
+        friends.markReply(qqKey, selfId)
+      } else {
+        // 私聊：回复后对方友好度 +1（聊多了变熟）
+        if (msg.user_id) {
+          friends.add(String(msg.user_id), 1)
+          log('info', '[qq-bridge] 私聊回复，用户 %s 友好度 +1 → %d', msg.user_id, friends.get(msg.user_id))
+        }
+      }
+      return
     } catch (err) {
       log('warn', '[qq-bridge] prompt failed: %s', err.message)
       await bot.sendText(target, `⚠️ 出错了：${err.message}`).catch(() => {})
