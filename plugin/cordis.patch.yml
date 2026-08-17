@@ -1,0 +1,14 @@
+# dsh-qq-bridge bundle patch —— 随桌面应用分发时的 bundle 层声明
+# （本地开发走 profile 补丁层，见 PLAN.md §3.2；此文件供 M3/M4 分发集成）
+- insert:
+    - id: qq-bridge
+      name: '@dsh-qq/qq-bridge'
+      config:
+        onebotWs: 'ws://127.0.0.1:6700'
+        onebotToken: ''
+        sessionCwd: ''
+        ack: true
+        stallNoticeMs: 60000
+        forceFlushMs: 30000
+        autoAnswer: 'reject'
+        maxChunkLength: 3500
