@@ -2,11 +2,11 @@
  * session.mjs —— DSH 会话管理
  *
  * 职责：
- *   - 按 qqKey 幂等建会话（复用已有会话，重启后按 cwd 恢复）
+ *   - 按 qqKey 幂等建会话（复用已有会话，重启后按 qq- 前缀 + cwd 恢复）
  *   - 校验会话 cwd 与配置工作目录一致；不一致则归档旧会话并以新 id 重建
  *   - 维护 qqKey -> { sessionId, cwd } 缓存
  *
- * 依赖宿主：ctx.apiProxy（sessions.list/create + workspace.archiveSession）
+ * 依赖宿主：ctx.apiProxy（sessions.list/create + workspace.list/archiveSession）
  */
 
 'use strict'
@@ -24,10 +24,14 @@ export function createSessionManager({ api, log = () => {}, onRebuild = () => {}
   /** qqKey -> { sessionId, cwd }（cwd 变更时强制重建） */
   const cache = new Map()
 
+  /** 是否为桥接自建会话（避免劫持 Web 等其他 cwd 相同的会话） */
+  const isBridgeId = (id) => String(id).startsWith('qq-')
+
   /**
    * 确保会话存在且 cwd 与配置一致；返回 sessionId。
-   * 同名会话 cwd 不一致时：归档旧会话（保留日志、从分组视图隐藏），
-   * 再以新 id 创建（同 id 重建会 session-conflict，不能复用旧 id）。
+   * 同名会话 cwd 不一致时：归档旧会话（保留日志、从分组视图隐藏），再新建。
+   * 新建优先用 qqKey 做 id（重启可恢复）；id 被已归档旧会话占用（session-conflict）
+   * 时退化为 qqKey-<时间戳>（保持 qq- 前缀，重启仍可恢复）。
    */
   async function ensure(qqKey, cwd) {
     const want = cwd || process.cwd()
@@ -39,31 +43,40 @@ export function createSessionManager({ api, log = () => {}, onRebuild = () => {}
     // 已归档会话（隐藏但仍列出）不参与复用，避免捡到旧的/诊断会话
     const arch = await api.workspace.list({ rpcId: randomUUID(), payload: {} })
     const archived = new Set(arch.result.ok ? arch.result.value.archivedSessionIds : [])
-    // 重启恢复：优先复用任意 cwd 一致的会话，避免每次重启都新建
-    const byCwd = items.find((it) => !archived.has(it.sessionId) && (it.cwd ?? '') === want)
+    // 1) 同名且 cwd 一致 → 复用（跨重启稳定）
+    const byId = items.find((it) => it.sessionId === qqKey && !archived.has(it.sessionId) && (it.cwd ?? '') === want)
+    if (byId) {
+      cache.set(qqKey, { sessionId: byId.sessionId, cwd: want })
+      return byId.sessionId
+    }
+    // 2) 重启恢复：复用任意桥接会话且 cwd 一致（只认 qq- 前缀，不劫持 Web 会话）
+    const byCwd = items.find((it) => isBridgeId(it.sessionId) && !archived.has(it.sessionId) && (it.cwd ?? '') === want)
     if (byCwd) {
       cache.set(qqKey, { sessionId: byCwd.sessionId, cwd: want })
       return byCwd.sessionId
     }
-    // 同名会话但 cwd 不一致：归档旧会话后重建
-    const byId = items.find((it) => it.sessionId === qqKey)
-    if (byId && !archived.has(byId.sessionId) && (byId.cwd ?? '') !== want) {
+    // 3) 同名会话但 cwd 不一致 → 归档旧会话后重建
+    const stale = items.find((it) => it.sessionId === qqKey)
+    if (stale && !archived.has(stale.sessionId)) {
       try {
-        const arch = await api.workspace.archiveSession({ rpcId: randomUUID(), payload: { sessionId: qqKey } })
-        if (!arch.result.ok) throw new Error(`${arch.result.error?.code}: ${arch.result.error?.message || 'archive failed'}`)
+        const a = await api.workspace.archiveSession({ rpcId: randomUUID(), payload: { sessionId: qqKey } })
+        if (!a.result.ok) throw new Error(`${a.result.error?.code}: ${a.result.error?.message || 'archive failed'}`)
         onRebuild(qqKey)
-        log('info', '[qq-bridge] 会话 %s 工作目录变更 %s -> %s，已归档重建', qqKey, byId.cwd, want)
+        log('info', '[qq-bridge] 会话 %s 工作目录变更 %s -> %s，已归档重建', qqKey, stale.cwd, want)
       } catch (e) {
         log('warn', '[qq-bridge] 归档旧会话失败（继续用旧会话）: %s', e.message)
-        cache.set(qqKey, { sessionId: byId.sessionId, cwd: byId.cwd })
-        return byId.sessionId
+        cache.set(qqKey, { sessionId: stale.sessionId, cwd: stale.cwd })
+        return stale.sessionId
       }
     }
-    // 新建（不预分配 id，避免与已归档的旧会话 id 冲突）
-    const created = await api.sessions.create({
-      rpcId: randomUUID(),
-      payload: { cwd: want },
-    })
+    // 4) 新建：优先 qqKey；冲突（已归档旧会话占着 id）退化为 qqKey-<时间戳>
+    let created = await api.sessions.create({ rpcId: randomUUID(), payload: { cwd: want, sessionId: qqKey } })
+    if (!created.result.ok && created.result.error?.code === 'session-conflict') {
+      created = await api.sessions.create({
+        rpcId: randomUUID(),
+        payload: { cwd: want, sessionId: `${qqKey}-${Date.now().toString(36)}` },
+      })
+    }
     if (!created.result.ok) throw new Error(`${created.result.error?.code}: ${created.result.error?.message || 'session.create failed'}`)
     const sessionId = created.result.value.sessionId
     cache.set(qqKey, { sessionId, cwd: want })
