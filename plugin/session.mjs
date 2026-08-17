@@ -24,9 +24,6 @@ export function createSessionManager({ api, log = () => {}, onRebuild = () => {}
   /** qqKey -> { sessionId, cwd }（cwd 变更时强制重建） */
   const cache = new Map()
 
-  /** 是否为桥接自建会话（避免劫持 Web 等其他 cwd 相同的会话） */
-  const isBridgeId = (id) => String(id).startsWith('qq-')
-
   /**
    * 确保会话存在且 cwd 与配置一致；返回 sessionId。
    * 同名会话 cwd 不一致时：归档旧会话（保留日志、从分组视图隐藏），再新建。
@@ -49,8 +46,9 @@ export function createSessionManager({ api, log = () => {}, onRebuild = () => {}
       cache.set(qqKey, { sessionId: byId.sessionId, cwd: want })
       return byId.sessionId
     }
-    // 2) 重启恢复：复用任意桥接会话且 cwd 一致（只认 qq- 前缀，不劫持 Web 会话）
-    const byCwd = items.find((it) => isBridgeId(it.sessionId) && !archived.has(it.sessionId) && (it.cwd ?? '') === want)
+    // 2) 重启恢复：复用本 qqKey 名下 cwd 一致的会话（退化 id 形如 qqKey-<ts>，
+    //    以 qqKey 开头；绝不复用其他用户/群/Web 的会话）
+    const byCwd = items.find((it) => String(it.sessionId).startsWith(qqKey) && !archived.has(it.sessionId) && (it.cwd ?? '') === want)
     if (byCwd) {
       cache.set(qqKey, { sessionId: byCwd.sessionId, cwd: want })
       return byCwd.sessionId
