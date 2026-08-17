@@ -32,10 +32,10 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
     return list.length
   }
 
-  /** 发送前清洗模型偶发的 <system-reminder> 模仿尾巴（DSH 运行时注入格式被模型回显） */
+  /** 发送前清洗模型偶发的运行时标签模仿块（system-reminder / available_skills），整块（含标签与内容）去除 */
   function sanitize(text) {
     return text
-      .replace(/<system-reminder>[\s\S]*?(<\/system-reminder>|$)/g, '')
+      .replace(/<(system-reminder|available_skills)>[\s\S]*?(<\/\1>|$)/g, '')
       .replace(/\n{3,}/g, '\n\n')
       .trim()
   }
