@@ -199,10 +199,9 @@ export function apply(ctx, rawConfig = {}) {
     const workPrefixes = [config.workPrefix, config.workPrefix === '!' ? '！' : ''].filter(Boolean)
     const wp = workPrefixes.find((p) => text.startsWith(p))
     if (!isGroup && wp) {
-      // 权限收束：非白名单用户拒绝工作指令（不创建会话、不触碰文件）
+      // 权限收束：非白名单用户的工作指令静默不可用（不回复、不提示、不创建会话）
       if (!allowWork) {
-        await bot.sendText(target, '⚠️ 你没有使用工作指令的权限').catch(() => {})
-        log('warn', '[qq-bridge] 用户 %s 工作指令被拒绝: %s', msg.user_id, text.slice(0, 40))
+        log('info', '[qq-bridge] 用户 %s 无权限调用工作指令(已忽略): %s', msg.user_id, text.slice(0, 40))
         return
       }
       const workText = text.slice(wp.length).trim()
