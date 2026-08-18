@@ -21,7 +21,7 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(msg)
 ## 2. 消息入口：onQqMessage（index.mjs）
 
 1. **文本提取与 @ 检测**：`extractText` 取纯文本；`isAtBot` 在文本过滤**之前**检测 @（@消息可能只有 @ 段、文本为空，也要触发）。
-2. **空消息直接丢弃**：`if (!text && !isAt) return`。
+2. **空消息直接丢弃**：`if (!text && !isAt && !hasImage) return`（纯图片消息由识图插件接管）。
 3. **分类**：`qqKey = qq-<group|private>-<群号|QQ号>`；`isGroup` 区分群聊/私聊。
 
 ### 群聊前置（isGroup）
@@ -107,20 +107,19 @@ else         → 私聊回复后对方友好度 +1
 
 ## 5. Prompt 内容块（按注入顺序）
 
+**记忆模式（`memoryEnabled=true`，默认）**：
+
 | 顺序 | 块 | 说明 |
 |------|-----|------|
-| 1 | 人设 | 补丁 `persona`（v5.0：普通爱聊天的朋友，2~3 句节奏） |
-| 2 | 成员认知 | 群聊：昵称/印象/发言次数 |
+| 1 | 人设 | 补丁 `persona`（当前 v4.1 回滚版；补丁为准，`DEFAULT_PERSONA` 已空白化） |
+| 2 | 记忆指令 | 固定指令：先读取本目录 chatlog.md + profiles.md 再回（不再注入滚动上下文） |
 | 3 | 讨论环境 | 仅讨论模式激活时注入 |
-| 4 | 友好度认知 | 当前说话者的友好度与关系（中性信息，无语气指令——语气由人设决定） |
-| 5 | 能量上下文 | 群聊：最近 `contextWindow` 条聊天记录（含机器人自己上一条，标 `botName`） |
-| 6 | 图片提示 | 消息带图时保存到工作目录并提示路径（模型用视觉工具查看） |
+| 4 | 工作目录提示 | `allowOutside` 决定"只能访问此目录"或"可读目录外" |
+| 5 | 安全约束 | 仅非白名单用户：「禁写/执行，只读 chatlog/profiles/图片路径；联网搜索+看图」 |
+| 6 | 图片提示 | 消息带图时保存并提示路径（识图插件提供，模型用视觉工具查看） |
 | 7 | 用户文本 | 或纯 @ 时的"（对方@了你）" |
-| 7 | 工作目录提示 | `allowOutside` 决定"只能访问此目录"或"可读目录外" |
-| 8 | 安全约束 | **仅非白名单用户**：「禁本机文件，联网搜索不受限」 |
 
-注：`replyFromCooldown`（冷却补回）只含 1/2/3/5/7 块，无友好度认知与安全约束
-（会话历史中已带约束，群级闲聊风险低）。
+**回退模式（`memoryEnabled=false`）**：同旧版——人设 → 成员认知 → 讨论 → 友好度认知 → 能量上下文 → 工作目录 → 安全 → 图片提示 → 用户文本。
 
 ## 6. 回复缓冲（reply-buffer.mjs）
 
@@ -136,7 +135,7 @@ else         → 私聊回复后对方友好度 +1
 | `~/.dsh/qq-bridge-energy.json` | 各群 `energy/cooldown/solo/discussion/historyLen` | 每 30s 落盘 + 退出时最终落盘 |
 | `~/.dsh/qq-bridge-friendly.json` | 全员友好度（按 QQ 号） | 友好度变化后防抖 10s 保存 |
 
-QQ 内命令：「友好度」/「友好度 <群号>」→ 查群内全员友好度（白名单内可用）。
+QQ 内命令：`/友好度` 或 `/友好度 <群号>`（指令统一 `/` 前缀）→ 查群内全员友好度（白名单内可用）。
 
 ## 8. 关键配置速查（补丁 cordis.patch.yml）
 
@@ -147,7 +146,7 @@ QQ 内命令：「友好度」/「友好度 <群号>」→ 查群内全员友好
 | `energy.soloIdleMs` | `60000` | solo 状态超时 |
 | `workUsers` | `[]` | 工作指令白名单（空=全部允许） |
 | `workCwd` | `~/Documents/DshDesktop` | 工作模式目录 |
-| `persona` | v5.0 | 人设文本（补丁 HMR 即时生效） |
+| `persona` | 补丁为准（当前 v4.1 回滚） | 人设文本（补丁 HMR 即时生效；`DEFAULT_PERSONA` 兜底已空白化） |
 | `groups.<群号>` | — | 按群覆盖（replyStyle/workdir/allowOutside/ack 等） |
 
 ## 9. 已知边界
