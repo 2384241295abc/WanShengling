@@ -63,7 +63,8 @@ export async function saveImage(seg, dir, request) {
     if (!path && file) {
       try {
         const res = await request('get_image', { file })
-        path = res?.path
+        // NapCat get_image 响应的本地路径在 file 字段（如 /…/emoji-recv/xxx.jpg），path 常缺省
+        path = res?.file ?? res?.path
         await debug('get_image ok:', JSON.stringify(res || {}).slice(0, 300))
       } catch (e) {
         await debug('get_image 失败:', e.message)
