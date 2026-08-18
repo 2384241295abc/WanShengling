@@ -15,6 +15,7 @@ DeepSeek Harness × QQ 远程交互桥（OneBot 11）—— 独立 Cordis 插件
 | **成员认知** | 自动识别群成员 QQ 昵称/群名片，从聊天记录推断话题画像（游戏/音乐/吃喝等） |
 | **讨论模式** | 群总友好度 > 成员数×80，或 2 分钟内发言人数 >5 时触发；能量 10 进入、回复后重置 30~60、< -24 退出 |
 | **每群工作目录** | 每群独立 cwd（`~/Documents/qqbot/<群号>/`），目录外读写受限 |
+| **插件架构** | registry.mjs 插件宿主：识图(features/vision)、指令(features/commands) 均为可插拔 feature，新能力注册即接入 |
 | **私聊工作指令** | 私聊以 `!` 开头走真实 DSH 代理（不注入人设，独立会话，cwd 默认 `~/Documents/DshDesktop`），其余消息按配置的人设聊天 |
 | **会话共享** | QQ 会话与 DSH Web UI 完全共享（in-process 架构） |
 

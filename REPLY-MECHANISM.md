@@ -166,3 +166,14 @@ QQ 内命令：「友好度」/「友好度 <群号>」→ 查群内全员友好
 - **清除缓存**：指令需 `/` 前缀——白名单用户(23012321)发 `/清除缓存` → 清除**全部群** chatlog.md 中一周前的记录；其他用户/无前缀均不触发。
 - **友好度**：`/友好度` 或 `/友好度 <群号>`（指令统一 `/` 前缀）
 - 安全约束：非白名单用户只允许读取 chatlog.md/profiles.md 与提示中图片路径，禁止写/执行。
+
+
+## 11. 插件架构（2026-08-19）
+
+- **registry.mjs**：轻量 feature 注册中心（插件宿主）。插件接口：`{ name, onMessage(ctx)?, onPrompt(ctx)?, onSessionEvent(sessionId,event)?, onReply(target,text)? }`。
+  - `onMessage(ctx)` 返回 `true` 拦截消息（命令、纯图处理等）
+  - `onPrompt(ctx)` 返回追加的内容块（识图提示等）
+- **内置插件**（`features/`）：
+  - `features/vision.mjs` —— 识图插件（纯图策略/视觉工具提示/识别结果入库/文件清理）
+  - `features/commands.mjs` —— 指令插件（`/友好度`、`/清除缓存`）
+- **接入新能力**：在 `index.mjs` 里 `features.register(createXxxFeature(deps))` 即可；deps 提供 bot/config/groups/energy/friends/members/sessions/log 等宿主能力。

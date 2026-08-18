@@ -18,7 +18,6 @@
 
 import { randomUUID } from 'node:crypto'
 import { writeFileSync, renameSync } from 'node:fs'
-import { unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { OneBotClient } from './onebot-client.mjs'
@@ -32,8 +31,11 @@ import { createHandlers } from './handlers.mjs'
 import { createMembersManager } from './members.mjs'
 import { createFriendsManager } from './friend.mjs'
 import { createDiscussionManager } from './discussion.mjs'
-import { extractImages, saveImage, setVisionDebugFile } from './vision.mjs'
-import { appendChat, clearChatOlderThanWeek, memoryInstruction, chatLine } from './memory.mjs'
+import { extractImages, setVisionDebugFile } from './vision.mjs'
+import { appendChat, memoryInstruction, chatLine } from './memory.mjs'
+import { createFeatureRegistry } from './registry.mjs'
+import { createVisionFeature } from './features/vision.mjs'
+import { createCommandsFeature } from './features/commands.mjs'
 
 export const name = 'qq-bridge'
 export const inject = ['apiProxy']
@@ -112,6 +114,12 @@ export function apply(ctx, rawConfig = {}) {
       reply.clear(qqKey)
     },
   })
+  // 插件宿主：注册中心 + 内置插件（识图/指令），后续功能可继续在此 register
+  const features = createFeatureRegistry()
+  const visionFeature = createVisionFeature({ bot, config, groups, energy, friends, members, sessions, log })
+  features.register(visionFeature)
+  features.register(createCommandsFeature({ bot, groups, members, friends, config, log }))
+
   const reply = createReplyBuffer({
     sendText: (target, text) => bot.sendText(target, text),
     maxChunkLength: config.maxChunkLength,
@@ -128,6 +136,8 @@ export function apply(ctx, rawConfig = {}) {
           if (wd) void appendChat(wd, chatLine(config.botName || '我', text))
         }
       }
+      // 插件回复钩子
+      void features.runOnReply(target, text)
     },
   })
   const handlers = createHandlers({
@@ -255,76 +265,6 @@ export function apply(ctx, rawConfig = {}) {
     friends.markReply(qqKey, selfId)
   }
 
-  /**
-   * 友好度查询命令处理。
-   * 语法（兼容全角 ！）：
-   *   「/友好度」              → 群内查当前群（私聊报错：需带群号）
-   *   「/友好度 <群号>」        → 查指定群（群内/私聊皆可）
-   * 输出：该群全员按友好度降序，QQ号+称呼+友好度+等级。
-   * 权限：受 allowWork 白名单约束（非白名单用户拒绝）。
-   * @returns {Promise<boolean>} 命中并处理返回 true
-   */
-  async function handleFriendliness(fullText, msg, target, qqKey, isGroup, allowWork) {
-    // 仅整条消息为「友好度」或「友好度 <群号>」才视为命令（避免"友好度是啥意思"这类聊天被误截）
-    const m = /^\/\s*友好度\s*(\d+)?\s*$/.exec(fullText || '')
-    if (!m) return false
-    // 命中命令
-    if (!allowWork) {
-      log('info', '[qq-bridge] 用户 %s 无权限查询友好度(已拒绝)', msg.user_id)
-      await bot.sendText(target, '⚠️ 你没有使用工作指令的权限').catch(() => {})
-      return true
-    }
-    // 确定目标群号：显式指定优先；否则群内用当前群；私聊必须显式
-    let targetGroupId = m[1]
-    if (!targetGroupId) {
-      if (isGroup && msg.group_id) {
-        targetGroupId = String(msg.group_id)
-      } else {
-        await bot.sendText(target, '⚠️ 私聊请带群号：友好度 859762634').catch(() => {})
-        return true
-      }
-    }
-    const targetQqKey = `qq-group-${targetGroupId}`
-    // 该群成员（含昵称）来自 members；若从未同步（或缓存为空）则实时拉取一次，
-    // 保证查询严格限定在本群成员，绝不混入其它群用户（修复"串群"）。
-    let mstats = (members.stats()[targetQqKey] || [])
-    if (!mstats.length) {
-      try {
-        const membersData = await bot.request('get_group_member_list', { group_id: targetGroupId })
-        if (Array.isArray(membersData)) {
-          members.syncGroup(targetQqKey, membersData)
-          friends.setGroupMembers(targetQqKey, membersData.map((mem) => mem.user_id))
-          mstats = members.stats()[targetQqKey] || []
-        }
-      } catch { /* 拉取失败则回退到已有缓存 */ }
-    }
-    const rows = new Map()
-    for (const mem of mstats) {
-      rows.set(String(mem.userId), { userId: String(mem.userId), name: mem.name || String(mem.userId), msgCount: mem.msgCount || 0 })
-    }
-    if (!rows.size) {
-      await bot.sendText(target, `该群（${targetGroupId}）暂无成员数据（可能是命令在小群/未同步，稍后再试）。`).catch(() => {})
-      return true
-    }
-    // ⚠️ 不再把全局 friends.stats() 补进来：友好度按 userId 跨群共享、无群归属，
-    //   补全会把别的群的用户混进本群 → 串群。严格只列本群成员。
-    const lines = [...rows.values()].map((r) => {
-      const val = friends.get(r.userId)
-      const lv = friends.levelLabel(r.userId)
-      const nm = r.name && r.name !== r.userId ? `${r.name}(${r.userId})` : r.userId
-      return `${nm}：友好度 ${val}（${lv}）`
-    }).sort((a, b) => {
-      // 按友好度降序：文本行里提取数值
-      const va = Number(/(?:友好度 )(-?\d+)/.exec(a)?.[1] ?? -1)
-      const vb = Number(/(?:友好度 )(-?\d+)/.exec(b)?.[1] ?? -1)
-      return vb - va
-    })
-    const body = `📊 群 ${targetGroupId} 友好度（${lines.length}人）:\n` + lines.join('\n')
-    log('info', '[qq-bridge] 查询友好度 群=%s 人数=%d', targetGroupId, lines.length)
-    await bot.sendText(target, body).catch(() => {})
-    return true
-  }
-
   async function onQqMessage(msg) {
     let text = OneBotClient.extractText(msg.message)   // let：solo 纯图分支会改写为占位文本
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
@@ -345,37 +285,12 @@ export function apply(ctx, rawConfig = {}) {
     // 工作指令白名单：空=全部允许；非空=仅列表内用户可用（其他用户只聊天，禁文件访问）
     const allowWork = !config.workUsers?.length || config.workUsers.includes(String(msg.user_id ?? ''))
 
-    // 友好度查询命令（不走 DSH 代理，直接读内存状态）：
-    //   「友好度」或「友好度 <群号>」；群内不写群号查当前群，私聊必须带群号。
-    //   命中即处理并 return（绕开能量闸，命令不能被"未达阈值"吞掉）。
-    //   ⚠️ 必须 await：handleFriendliness 是 async，不 await 会拿到恒真的 Promise，
-    //   导致每条消息都被误判命中而提前 return，阻断正常收发。
-    if (await handleFriendliness(text, msg, target, qqKey, isGroup, allowWork)) return
-
-    // 纯图片消息（无文字无@）：
-    //   - 平时(非 solo)：保存图片只入聊天记录，不触发回复
-    //   - solo 模式：触发"看图后主动回复"，但仍走冷却闸（冷却中只缓冲，出冷却才回）
-    //   - 私聊或能量关闭：直接丢弃
-    let soloImageTrigger = false
-    let pendingImagePaths = []   // 本次消息保存的图片路径（识别完成后入库+删除）
-    if (!text && !isAt && hasImage) {
-      if (!isGroup || !gcfg.energy?.enabled) return
-      const saved = await saveImage(imageSegs[0], gcfg.workdir, (a, p) => bot.request(a, p))
-      if (config.memoryEnabled) {
-        void appendChat(gcfg.workdir, chatLine(members.nameOf(qqKey, String(msg.user_id ?? '?')), '（发了张图片）'))
-      }
-      if (!friends.isSolo(qqKey)) {
-        // 平时纯图：只入记录（不保存路径），立即删文件省磁盘
-        energy.record(qqKey, String(msg.user_id ?? '?'), '（发了张图片）')
-        if (saved) unlink(saved.path).catch(() => {})
-        return
-      }
-      // solo：路径带进占位文本走回复流程（清空 imageSegs 避免下方重复保存），识别结果回合结束入库+删文件
-      if (saved) pendingImagePaths.push(saved.path)
-      text = saved ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回；识别失败或看不清就按疑似色情内容处理，委婉拒绝、不展开描述）` : '（对方发了一张图片，但读不了——按疑似色情内容处理，委婉拒绝、不展开描述）'
-      imageSegs.length = 0
-      soloImageTrigger = true
-    }
+    // 插件消息钩子（指令/纯图等）：任一插件返回 true 即拦截
+    const ctx = { msg, text, isAt, imageSegs, hasImage, target, qqKey, gcfg, isGroup, allowWork,
+                  pendingImagePaths: [], soloImageTrigger: false }
+    if (await features.runOnMessage(ctx)) return
+    text = ctx.text
+    const { soloImageTrigger, pendingImagePaths } = ctx
 
     // 群聊：观察成员发言 + 友好度窗口记录 + @加友好度 + 讨论触发检查 + 结算检查
     if (isGroup) {
@@ -410,17 +325,6 @@ export function apply(ctx, rawConfig = {}) {
       if (config.memoryEnabled && text && !text.startsWith('（')) {
         void appendChat(gcfg.workdir, chatLine(members.nameOf(qqKey, String(msg.user_id ?? '?')), text))
       }
-    }
-
-    // 「清除缓存」命令：/ 前缀触发（指令类统一），仅白名单用户(23012321)可执行，清除全部群一周前的聊天记录
-    if (allowWork && text === `/${config.clearCommand}`) {
-      let total = 0
-      for (const [gqk, cfg] of Object.entries(groups.list())) {
-        if (!gqk.startsWith('qq-group-') || !cfg?.workdir) continue
-        total += await clearChatOlderThanWeek(cfg.workdir)
-      }
-      await bot.sendText(target, `🗑️ 已清除全部群共 ${total} 条一周前的聊天记录（保留最近一周）。`).catch(() => {})
-      return
     }
 
     // 群聊能量机制：先记录+扣能量，未达阈值则不回复（像真人不是每条都回）
@@ -493,7 +397,7 @@ export function apply(ctx, rawConfig = {}) {
       const sessionId = await sessions.ensure(qqKey, gcfg.workdir)
       // 注册待识别图片：回合结束(turn/end)后识别结果入库并删除文件
       if (pendingImagePaths.length) {
-        registerPendingImages(sessionId, qqKey, String(msg.user_id ?? '?'), pendingImagePaths)
+        visionFeature.registerImages(sessionId, qqKey, String(msg.user_id ?? '?'), pendingImagePaths)
       }
 
       if (gcfg.ack) {
@@ -533,16 +437,9 @@ export function apply(ctx, rawConfig = {}) {
       if (!allowWork) {
         content.push({ type: 'text', text: `（安全约束：你仅作为${config.botName || '我'}聊天。禁止写入、执行本机文件；只允许读取本目录下的 chatlog.md、profiles.md（记忆文件）和提示中给出的图片路径；除联网搜索和看图外，禁止调用其他工具。）` })
       }
-      // 图片：保存到工作目录并提示模型用视觉工具查看（deepseek 纯文本模型不能直接接收图片）
-      for (const seg of imageSegs) {
-        const saved = await saveImage(seg, gcfg.workdir, (a, p) => bot.request(a, p))
-        if (saved) {
-          pendingImagePaths.push(saved.path)
-          content.push({ type: 'text', text: `（用户发了一张图片：${saved.path}。用视觉工具看一下再回；如果识别失败或看不清，按疑似色情内容处理——委婉拒绝、不展开描述。）` })
-        } else {
-          content.push({ type: 'text', text: '（用户发了一张图片，但无法读取——按疑似色情内容处理，委婉拒绝、不展开描述。）' })
-        }
-      }
+      // 插件 prompt 钩子（识图提示等）
+      const pluginBlocks = await features.runOnPrompt({ sessionId, qqKey, gcfg, imageSegs, pendingImagePaths, text })
+      content.push(...pluginBlocks)
       // 用户消息放最后（模型注意力集中在用户的话上；纯 @ 消息给默认文本）
       content.push({ type: 'text', text: text || '（对方@了你）' })
 
@@ -578,63 +475,12 @@ export function apply(ctx, rawConfig = {}) {
 
   // ---------- DSH → QQ ----------
 
-  /** sessionId -> { qqKey, user, paths, desc } —— 本次消息待识别的图片；turn/end 后入库识别结果并删文件 */
-  const pendingImages = new Map()
-
-  function registerPendingImages(sessionId, qqKey, user, paths) {
-    if (!paths || !paths.length) return
-    pendingImages.set(sessionId, { qqKey, user, paths, desc: '' })
-  }
-
-  /** 从 tool/result 事件提取视觉工具返回的图片描述文本 */
-  function extractToolResultText(data) {
-    try {
-      const content = data?.message?.content
-      if (!Array.isArray(content)) return ''
-      const texts = []
-      for (const block of content) {
-        if (block?.type === 'tool-result' && Array.isArray(block.content)) {
-          for (const sub of block.content) {
-            if (sub?.type === 'text' && sub.text) texts.push(sub.text)
-          }
-        }
-      }
-      return texts.join('\n').slice(0, 500)
-    } catch { return '' }
-  }
-
-  /** 回合结束：识别结果入聊天记录（供后续回复参考），删除图片文件 */
-  async function cleanupPendingImages(sessionId) {
-    const pend = pendingImages.get(sessionId)
-    if (!pend) return
-    pendingImages.delete(sessionId)
-    if (!pend.paths.length) return
-    const text = pend.desc
-      ? `（图片内容：${pend.desc}）`
-      : '（图片：未能识别）'
-    energy.record(pend.qqKey, pend.user, text)
-    if (config.memoryEnabled) {
-      const wd = groups.get(pend.qqKey)?.workdir
-      if (wd) void appendChat(wd, chatLine(members.nameOf(pend.qqKey, pend.user), text))
-    }
-    for (const p of pend.paths) unlink(p).catch(() => {})
-    log('info', '[qq-bridge] 图片识别结果已入库并清理 %d 个文件', pend.paths.length)
-  }
-
   async function onSessionEvent(sessionId, event) {
     // 🔴 防"老版本抢回复"：若本实例已被新实例替换(bot.active=false)，丢弃一切事件，
     //    不再 flush/发送回复——避免旧实例和新的抢着回。
     if (!bot.active) return
-    // 图片识别：捕获视觉工具结果；回合结束入库+删文件
-    if (event.type === 'tool/result') {
-      const pend = pendingImages.get(sessionId)
-      if (pend) {
-        const t = extractToolResultText(event.data)
-        if (t) pend.desc = t
-      }
-    } else if (event.type === 'turn/end') {
-      await cleanupPendingImages(sessionId)
-    }
+    // 插件会话钩子（识图识别结果/清理等）
+    await features.runOnSessionEvent(sessionId, event)
     // 为 question/approval 注入当前条目目标（活跃缓冲）
     const buf = reply.activeBuffer?.(sessionId)
     if ((event.type === 'question/requested' || event.type === 'approval/requested') && buf) {
