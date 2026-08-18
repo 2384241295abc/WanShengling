@@ -31,7 +31,7 @@ import { createHandlers } from './handlers.mjs'
 import { createMembersManager } from './members.mjs'
 import { createFriendsManager } from './friend.mjs'
 import { createDiscussionManager } from './discussion.mjs'
-import { extractImages, saveImage } from './vision.mjs'
+import { extractImages, saveImage, setVisionDebugFile } from './vision.mjs'
 
 export const name = 'qq-bridge'
 export const inject = ['apiProxy']
@@ -70,6 +70,9 @@ export function apply(ctx, rawConfig = {}) {
       _log('warn', '[qq-bridge] 清理上一个 runtime 失败: %s', err?.message || err)
     }
   }
+
+  // 图片调试日志（~/bin/.dsh/qq-bridge-vision.log，排查 saveImage 失败用）
+  setVisionDebugFile(join(homedir(), '.dsh', 'qq-bridge-vision.log'))
 
   // 2. 基础设施
   const bot = new OneBotClient({

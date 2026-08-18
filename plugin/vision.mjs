@@ -12,8 +12,18 @@
 
 'use strict'
 
-import { readFile, stat, mkdir, writeFile } from 'node:fs/promises'
+import { readFile, stat, mkdir, writeFile, appendFile } from 'node:fs/promises'
 import { join, extname } from 'node:path'
+
+/** 调试日志文件（index.mjs 可 setVisionDebugFile 指定；空=关闭） */
+let debugFile = ''
+
+export function setVisionDebugFile(p) { debugFile = p }
+
+async function debug(...args) {
+  if (!debugFile) return
+  try { await appendFile(debugFile, `[${new Date().toISOString()}] ${args.join(' ')}\n`) } catch {}
+}
 
 const EXT_MEDIA = {
   '.png': 'image/png',
@@ -44,35 +54,54 @@ export function mediaTypeFromPath(p) {
  * @param {Function} request OneBot 请求函数（用于 get_image），如 bot.request
  */
 export async function saveImage(seg, dir, request) {
+  const data = seg?.data || {}
+  await debug('saveImage 段 data:', JSON.stringify(data).slice(0, 300))
   try {
     await mkdir(dir, { recursive: true })
-    let path = seg.data?.path
-    const file = seg.data?.file
+    let path = data.path
+    const file = data.file
     if (!path && file) {
-      const res = await request('get_image', { file })
-      path = res?.path
+      try {
+        const res = await request('get_image', { file })
+        path = res?.path
+        await debug('get_image ok:', JSON.stringify(res || {}).slice(0, 300))
+      } catch (e) {
+        await debug('get_image 失败:', e.message)
+      }
     }
     let buf
     let ext = '.jpg'
     if (path) {
       const st = await stat(path).catch(() => null)
-      if (!st || st.size <= 0 || st.size > MAX_IMAGE_BYTES) return null
+      if (!st || st.size <= 0 || st.size > MAX_IMAGE_BYTES) {
+        await debug(`本地 path 不可用: ${path} (size=${st?.size})`)
+        return null
+      }
       buf = await readFile(path)
       ext = extname(path)
+      await debug(`本地读取 ok: ${path} (${buf.length}B)`)
     } else {
-      const url = seg.data?.url
-      if (!url) return null
-      const r = await fetch(url)
-      if (!r.ok) return null
+      const url = data.url
+      if (!url) { await debug('无 url 且无 path，放弃'); return null }
+      // QQ CDN 常要求 Referer，先带 Referer 试，失败再裸拉
+      let r
+      try { r = await fetch(url, { headers: { Referer: 'https://qun.qq.com/' } }) } catch { r = null }
+      if (!r || !r.ok) {
+        try { r = await fetch(url) } catch (e) { await debug('url 下载失败:', e.message); return null }
+      }
+      if (!r.ok) { await debug(`url 下载状态 ${r.status}`); return null }
       buf = Buffer.from(await r.arrayBuffer())
-      if (buf.length > MAX_IMAGE_BYTES) return null
+      if (buf.length > MAX_IMAGE_BYTES) { await debug(`图片超限 ${buf.length}B`); return null }
       ext = extname(url)
+      await debug(`url 下载 ok (${buf.length}B)`)
     }
     const name = `qqimg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext || '.jpg'}`
     const dest = join(dir, name)
     await writeFile(dest, buf)
+    await debug(`已保存: ${dest}`)
     return { path: dest, mediaType: mediaTypeFromPath(dest) }
-  } catch {
+  } catch (e) {
+    await debug('saveImage 异常:', e.message)
     return null
   }
 }
