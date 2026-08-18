@@ -356,10 +356,9 @@ export function apply(ctx, rawConfig = {}) {
         // 已同步过：每次消息也检查活跃触发（2分钟内>5人）
         discussion.checkEnter(qqKey, friends.groupTotalAll(qqKey), memberCounts.get(qqKey) || 0, discussion.recentSpeakers(qqKey))
       }
-      // @ 万生玲的用户友好度 +5，并进入 solo 状态（记录发起人，回复后能量设为 10）
+      // @ 万生玲的用户友好度 +5（无论是否触发回复）
       if (isAt) {
         friends.boost(String(msg.user_id ?? '?'))
-        friends.enterSolo(qqKey, String(msg.user_id ?? '?'))
         log('info', '[qq-bridge] 用户 %s @万生玲，友好度 +5 → %d', msg.user_id, friends.get(msg.user_id))
       }
     }
@@ -383,8 +382,9 @@ export function apply(ctx, rawConfig = {}) {
         }
       }
 
-      // 被 @ 时强制触发（点名就得回），否则正常 feed
+      // 被 @ 时强制触发（点名就得回）并进入 solo（记录发起人），否则正常 feed
       if (isAt) {
+        friends.enterSolo(qqKey, String(msg.user_id ?? '?'))
         energy.force(qqKey)
       } else {
         // 挚友说话成本：挚友扣 17 能量（比普通 10 更积极），否则默认 msgCost
