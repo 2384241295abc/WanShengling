@@ -279,7 +279,8 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     if (!currentUserId) return ''
     const v = get(currentUserId)
     const l = level(currentUserId)
-    return `（你对当前说话者（${currentUserId}）的友好度为 ${v}，关系判定：${l.label}。${l.label === '挚友' ? '对他可以完全放开，随便开玩笑。' : l.label === '熟悉' ? '对他比较熟，可以开玩笑吐槽。' : l.label === '认识' ? '对他不算熟，保持礼貌距离，别太热情。' : '和他不熟，回复保持简短冷淡，别太热情。'}）`
+    // 只报关系信息，不给语气指令（语气由人设决定——v5.0 树洞型对谁都温和，不再按熟悉度"冷淡/热情"）
+    return `（你与 ${currentUserId} 的友好度为 ${v}，关系：${l.label}。）`
   }
 
   /** 某群成员友好度总和（讨论触发判定用，窗口回退） */
