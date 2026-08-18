@@ -239,9 +239,19 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     return Object.fromEntries([...states.entries()].map(([k, v]) => [k, { energy: v.energy, historyLen: v.history.length }]))
   }
 
+  /** 纯记录一条消息进聊天历史（不扣能量、不触发、不计 pending）—— 如图片等无文字消息的占位 */
+  function record(qqKey, user, text) {
+    const now = Date.now()
+    let st = states.get(qqKey)
+    if (!st) { st = { energy: opts.range[0], lastTick: now, history: [] }; states.set(qqKey, st) }
+    st.history.push({ user, text, at: now })
+    const keep = opts.contextWindow
+    if (st.history.length > keep) st.history = st.history.slice(-keep)
+  }
+
   function dispose() {
     states.clear()
   }
 
-  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, recordBotReply, beginCooldown, inCooldown, feedCooldown, breakCooldown, cooldownExpired }
+  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, feedCooldown, breakCooldown, cooldownExpired }
 }

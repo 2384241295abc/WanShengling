@@ -18,7 +18,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { writeFileSync, renameSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFile, stat } from 'node:fs/promises'
+import { join, extname } from 'node:path'
 import { homedir } from 'node:os'
 import { OneBotClient } from './onebot-client.mjs'
 import { resolveConfig } from './config.mjs'
@@ -309,11 +310,50 @@ export function apply(ctx, rawConfig = {}) {
     return true
   }
 
+  // ---------- 图片识别：把消息里的图片转成 prompt 图片块（随回复分析，不单独触发） ----------
+  const IMAGE_EXT_MEDIA = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif' }
+  const MAX_IMAGE_BYTES = 5 * 1024 * 1024   // 与宿主 imageLimits.maxImageBytes 对齐
+
+  function mediaTypeFromPath(p) {
+    return IMAGE_EXT_MEDIA[(extname(p || '').toLowerCase())] || 'image/jpeg'
+  }
+
+  /** 取一张 OneBot image 段 → { data: base64, mediaType }；失败/超限返回 null */
+  async function resolveImage(seg) {
+    try {
+      let path = seg.data?.path
+      const file = seg.data?.file
+      if (!path && file) {
+        const res = await bot.request('get_image', { file })
+        path = res?.path
+      }
+      if (path) {
+        const st = await stat(path).catch(() => null)
+        if (!st || st.size <= 0 || st.size > MAX_IMAGE_BYTES) return null
+        const buf = await readFile(path)
+        return { data: buf.toString('base64'), mediaType: mediaTypeFromPath(path) }
+      }
+      const url = seg.data?.url
+      if (!url) return null
+      const r = await fetch(url)
+      if (!r.ok) return null
+      const buf = Buffer.from(await r.arrayBuffer())
+      if (buf.length > MAX_IMAGE_BYTES) return null
+      return { data: buf.toString('base64'), mediaType: mediaTypeFromPath(url) }
+    } catch (e) {
+      log('warn', '[qq-bridge] 图片解析失败: %s', e.message)
+      return null
+    }
+  }
+
   async function onQqMessage(msg) {
     const text = OneBotClient.extractText(msg.message)
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
     const isAt = selfId ? isAtBot(msg.message, selfId) : false
-    if (!text && !isAt) return
+    // 图片段（作为消息内容的一部分随回复分析，不单独触发）
+    const imageSegs = Array.isArray(msg.message) ? msg.message.filter((s) => s?.type === 'image') : []
+    const hasImage = imageSegs.length > 0
+    if (!text && !isAt && !hasImage) return
     const target = {
       message_type: msg.message_type,          // 'group' | 'private'
       group_id: msg.group_id,
@@ -332,6 +372,14 @@ export function apply(ctx, rawConfig = {}) {
     //   ⚠️ 必须 await：handleFriendliness 是 async，不 await 会拿到恒真的 Promise，
     //   导致每条消息都被误判命中而提前 return，阻断正常收发。
     if (await handleFriendliness(text, msg, target, qqKey, isGroup, allowWork)) return
+
+    // 纯图片消息（无文字无@）：只入聊天记录（供后续回复参考），不触发回复、不单独分析
+    if (!text && !isAt && hasImage) {
+      if (isGroup && gcfg.energy?.enabled) {
+        energy.record(qqKey, String(msg.user_id ?? '?'), '（发了张图片）')
+      }
+      return
+    }
 
     // 群聊：观察成员发言 + 友好度窗口记录 + @加友好度 + 讨论触发检查 + 结算检查
     if (isGroup) {
@@ -460,6 +508,12 @@ export function apply(ctx, rawConfig = {}) {
       // 权限收束：非白名单用户只聊天，禁止触碰本机文件（联网搜索不受限——人设需要查词/梗）
       if (!allowWork) {
         content.push({ type: 'text', text: '（安全约束：你仅作为万生玲聊天。禁止读取、写入、执行本机任何文件；除联网搜索外，禁止调用其他工具。）' })
+      }
+      // 图片块：本次消息带的图片随回复一起给模型（作为回复依据；读不到的图给占位说明）
+      for (const seg of imageSegs) {
+        const img = await resolveImage(seg)
+        if (img) content.push({ type: 'image', mediaType: img.mediaType, data: img.data })
+        else content.push({ type: 'text', text: '（用户发了一张图片，但无法读取内容）' })
       }
       // 用户消息放最后（模型注意力集中在用户的话上；纯 @ 消息给默认文本）
       content.push({ type: 'text', text: text || '（对方@了你）' })
