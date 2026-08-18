@@ -45,6 +45,11 @@ export const DEFAULTS = {
 
   // 按群覆盖配置（key = 群号数字，如 "859762634"）
   groups: {},
+
+  // 群聊文件记忆（chatlog.md + profiles.md）
+  memoryEnabled: true,       // 群聊是否启用文件记忆（prompt 改为读文件而非注入上下文）
+  clearCommand: '清除缓存',  // 群聊触发词：清除一周前的聊天记录
+  profileWeekMs: 7 * 24 * 3600 * 1000,   // 每周档案自动更新间隔
 }
 
 /** 合并环境变量与原始配置，返回最终 config */

@@ -74,6 +74,9 @@ ln -s <本仓库>/plugin ~/.dsh/profiles/node_modules/@dsh-qq/qq-bridge
 | `energy.contextWindow` | `8` | 触发时携带最近消息条数 |
 | `workPrefix` | `!` | 私聊工作指令前缀（前缀开头 → 真实 DSH 代理） |
 | `workCwd` | `~/Documents/DshDesktop` | 工作模式 DSH 代理 cwd |
+| `memoryEnabled` | `true` | 群聊文件记忆（chatlog.md + profiles.md，prompt 改为读文件） |
+| `clearCommand` | `清除缓存` | 群聊清除一周前聊天记录的命令词 |
+| `profileWeekMs` | 7 天 | 用户档案每周自动更新间隔 |
 | `groups.<群号>` | — | 按群覆盖（persona/replyStyle/workdir/allowOutside/ack） |
 
 ## 🧪 测试

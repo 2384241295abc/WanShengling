@@ -33,6 +33,7 @@ import { createMembersManager } from './members.mjs'
 import { createFriendsManager } from './friend.mjs'
 import { createDiscussionManager } from './discussion.mjs'
 import { extractImages, saveImage, setVisionDebugFile } from './vision.mjs'
+import { appendChat, clearChatOlderThanWeek, memoryInstruction, chatLine } from './memory.mjs'
 
 export const name = 'qq-bridge'
 export const inject = ['apiProxy']
@@ -121,6 +122,11 @@ export function apply(ctx, rawConfig = {}) {
       if (config.energy?.enabled && target?.message_type === 'group' && target.group_id && text) {
         const gk = qqSessionId('group', target.group_id)
         energy.recordBotReply(gk, text)
+        // 文件记忆：机器人回复写入该群 chatlog.md
+        if (config.memoryEnabled) {
+          const wd = groups.get(gk)?.workdir
+          if (wd) void appendChat(wd, chatLine(config.botName || '我', text))
+        }
       }
     },
   })
@@ -145,7 +151,7 @@ export function apply(ctx, rawConfig = {}) {
    * 异步入队（accepted 即返回；回复走事件流）。带 rpcId（契约要求）+ 对瞬时拒绝重试。
    * @returns {Promise<void>} 入队成功；否则抛错
    */
-  async function promptQueue(sessionId, content, target, label) {
+  async function promptQueue(sessionId, content, target, label, opts = {}) {
     let lastErr = null
     for (let attempt = 0; attempt < 3; attempt++) {
       const { result } = await ctx.apiProxy.sessions.prompt({
@@ -156,7 +162,7 @@ export function apply(ctx, rawConfig = {}) {
         },
       })
       if (result.ok) {
-        reply.enqueue(sessionId, target)
+        if (!opts.silent) reply.enqueue(sessionId, target)   // silent：后台任务（如档案更新）不回 QQ
         log('info', '[qq-bridge] queued "%s" -> %s', label.slice(0, 40), sessionId)
         return
       }
@@ -229,12 +235,16 @@ export function apply(ctx, rawConfig = {}) {
     const content = []
     const persona = buildPersonaPrompt(gcfg)
     if (persona) content.push({ type: 'text', text: persona })
-    const mctx = members.buildContext(qqKey, selfId)
-    if (mctx) content.push({ type: 'text', text: mctx })
     const dctx = discussion.getContext(qqKey)
     if (dctx) content.push({ type: 'text', text: dctx })
-    const gctx = energy.getContext(qqKey, true)   // 省略"当前"这条仅剩历史，冷却期消息已在历史里
-    if (gctx) content.push({ type: 'text', text: gctx })
+    if (config.memoryEnabled) {
+      content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
+    } else {
+      const mctx = members.buildContext(qqKey, selfId)
+      if (mctx) content.push({ type: 'text', text: mctx })
+      const gctx = energy.getContext(qqKey, true)   // 省略"当前"这条仅剩历史，冷却期消息已在历史里
+      if (gctx) content.push({ type: 'text', text: gctx })
+    }
     content.push({ type: 'text', text: '（刚刚有人说话了，自然接一句。）' })
     const scopeNote = gcfg.allowOutside
       ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
@@ -351,6 +361,9 @@ export function apply(ctx, rawConfig = {}) {
     if (!text && !isAt && hasImage) {
       if (!isGroup || !gcfg.energy?.enabled) return
       const saved = await saveImage(imageSegs[0], gcfg.workdir, (a, p) => bot.request(a, p))
+      if (config.memoryEnabled) {
+        void appendChat(gcfg.workdir, chatLine(members.nameOf(qqKey, String(msg.user_id ?? '?')), '（发了张图片）'))
+      }
       if (!friends.isSolo(qqKey)) {
         // 平时纯图：只入记录（不保存路径），立即删文件省磁盘
         energy.record(qqKey, String(msg.user_id ?? '?'), '（发了张图片）')
@@ -393,6 +406,21 @@ export function apply(ctx, rawConfig = {}) {
         friends.boost(String(msg.user_id ?? '?'), qqKey)
         log('info', '[qq-bridge] 用户 %s @机器人，友好度 +5 → %d', msg.user_id, friends.get(msg.user_id))
       }
+      // 文件记忆：用户消息写入该群 chatlog.md
+      if (config.memoryEnabled && text && !text.startsWith('（')) {
+        void appendChat(gcfg.workdir, chatLine(members.nameOf(qqKey, String(msg.user_id ?? '?')), text))
+      }
+    }
+
+    // 「清除缓存」命令（群聊，白名单内）：清除一周前的聊天记录
+    if (isGroup && config.clearCommand && text === config.clearCommand) {
+      if (!allowWork) {
+        log('info', '[qq-bridge] 用户 %s 无权限清除缓存(已忽略)', msg.user_id)
+        return
+      }
+      const removed = await clearChatOlderThanWeek(gcfg.workdir)
+      await bot.sendText(target, `🗑️ 已清除 ${removed} 条一周前的聊天记录（保留最近一周）。`).catch(() => {})
+      return
     }
 
     // 群聊能量机制：先记录+扣能量，未达阈值则不回复（像真人不是每条都回）
@@ -472,32 +500,38 @@ export function apply(ctx, rawConfig = {}) {
         await bot.sendText(target, ackText(gcfg)).catch(() => {})
       }
 
-      // 人设注入 + 成员认知 + 群聊上下文 + 权限约束 → prompt 内容块
+      // 人设注入 + 群聊上下文 + 权限约束 → prompt 内容块
       const persona = buildPersonaPrompt(gcfg)
       const content = []
       if (persona) content.push({ type: 'text', text: persona })
-      // 成员认知：群聊注入（昵称/印象/发言次数）
       if (isGroup) {
-        const mctx = members.buildContext(qqKey, selfId)
-        if (mctx) content.push({ type: 'text', text: mctx })
+        if (config.memoryEnabled) {
+          // 文件记忆模式：固定指令，让模型读取 chatlog.md + profiles.md（不再注入滚动上下文）
+          content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
+        } else {
+          // 兼容旧模式：注入成员认知 + 能量滚动上下文
+          const mctx = members.buildContext(qqKey, selfId)
+          if (mctx) content.push({ type: 'text', text: mctx })
+          const gctx = energy.getContext(qqKey, fedCurrentMsg)
+          if (gctx) content.push({ type: 'text', text: gctx })
+          const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
+          if (fctx) content.push({ type: 'text', text: fctx })
+        }
         // 讨论环境提示：让机器人发言更符合"多人讨论"氛围
         const dctx = discussion.getContext(qqKey)
         if (dctx) content.push({ type: 'text', text: dctx })
-      }
-      // 友好度认知：群聊+私聊都注入 —— 按与对方的熟悉度调整语气
-      const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
-      if (fctx) content.push({ type: 'text', text: fctx })
-      if (isGroup && gcfg.energy?.enabled) {
-        const gctx = energy.getContext(qqKey, fedCurrentMsg)   // fedCurrentMsg=true 时省略当前待回应消息，防重复/对错话
-        if (gctx) content.push({ type: 'text', text: gctx })
+      } else {
+        // 私聊：保持友好度认知（无文件记忆）
+        const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
+        if (fctx) content.push({ type: 'text', text: fctx })
       }
       const scopeNote = gcfg.allowOutside
         ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
         : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
       content.push({ type: 'text', text: scopeNote })
-      // 权限收束：非白名单用户只聊天，禁止触碰本机文件（联网搜索/视觉看图不受限——人设需要查词/看图）
+      // 权限收束：非白名单用户只聊天，禁止触碰本机文件（记忆文件/联网搜索/视觉看图除外——回复需要读记忆与查词看图）
       if (!allowWork) {
-        content.push({ type: 'text', text: `（安全约束：你仅作为${config.botName || '我'}聊天。禁止读取、写入、执行本机文件（视觉工具仅可查看提示中给出的图片路径）；除联网搜索和看图外，禁止调用其他工具。）` })
+        content.push({ type: 'text', text: `（安全约束：你仅作为${config.botName || '我'}聊天。禁止写入、执行本机文件；只允许读取本目录下的 chatlog.md、profiles.md（记忆文件）和提示中给出的图片路径；除联网搜索和看图外，禁止调用其他工具。）` })
       }
       // 图片：保存到工作目录并提示模型用视觉工具查看（deepseek 纯文本模型不能直接接收图片）
       for (const seg of imageSegs) {
@@ -579,6 +613,10 @@ export function apply(ctx, rawConfig = {}) {
       ? `（图片内容：${pend.desc}）`
       : '（图片：未能识别）'
     energy.record(pend.qqKey, pend.user, text)
+    if (config.memoryEnabled) {
+      const wd = groups.get(pend.qqKey)?.workdir
+      if (wd) void appendChat(wd, chatLine(members.nameOf(pend.qqKey, pend.user), text))
+    }
     for (const p of pend.paths) unlink(p).catch(() => {})
     log('info', '[qq-bridge] 图片识别结果已入库并清理 %d 个文件', pend.paths.length)
   }
@@ -634,6 +672,27 @@ export function apply(ctx, rawConfig = {}) {
     }
   }, SOLO_CHECK_INTERVAL_MS)
 
+  // 每周档案更新：基于 chatlog.md + 现有 profiles.md，让 agent 静默更新用户档案
+  const PROFILE_UPDATE_MS = config.profileWeekMs || (7 * 24 * 3600 * 1000)
+  const profileUpdateTimer = setInterval(() => {
+    if (!config.memoryEnabled) return
+    for (const [gqk, cfg] of Object.entries(groups.list())) {
+      if (!gqk.startsWith('qq-group-') || !cfg?.workdir) continue
+      void (async () => {
+        try {
+          const sessionId = await sessions.ensure(gqk, cfg.workdir)
+          const content = [
+            { type: 'text', text: `【档案更新任务】读取本目录下的 chatlog.md（该群聊天记录）和现有 profiles.md（用户档案）。更新 profiles.md：为每个用户归纳昵称、性格特点、兴趣话题、与你的熟识度；保留已有信息，合并本周新增内容。只更新文件，不要向用户回复任何内容。` },
+          ]
+          await promptQueue(sessionId, content, null, '每周档案更新', { silent: true })
+          log('info', '[qq-bridge] 每周档案更新已触发 %s', gqk)
+        } catch (e) {
+          log('warn', '[qq-bridge] 档案更新失败 %s: %s', gqk, e.message)
+        }
+      })()
+    }
+  }, PROFILE_UPDATE_MS)
+
   log('info', '[qq-bridge] 已启动，OneBot WS: %s', config.onebotWs)
 
   // ⚠️ 清理必须通过 apply 的返回值（disposer）注册：Cordis 从不 emit 'dispose'
@@ -643,6 +702,7 @@ export function apply(ctx, rawConfig = {}) {
   const runtime = {
     dispose() {
       clearInterval(soloCheckInterval)
+      clearInterval(profileUpdateTimer)
       clearInterval(statusTimer)
       writeStatus()                  // 最终落盘一次状态
       for (const t of cooldownTimers.values()) clearTimeout(t)
