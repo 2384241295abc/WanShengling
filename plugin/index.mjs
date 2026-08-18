@@ -358,7 +358,7 @@ export function apply(ctx, rawConfig = {}) {
       }
       // @ 万生玲的用户友好度 +5（无论是否触发回复）
       if (isAt) {
-        friends.boost(String(msg.user_id ?? '?'))
+        friends.boost(String(msg.user_id ?? '?'), qqKey)
         log('info', '[qq-bridge] 用户 %s @万生玲，友好度 +5 → %d', msg.user_id, friends.get(msg.user_id))
       }
     }

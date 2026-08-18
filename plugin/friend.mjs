@@ -198,7 +198,7 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
         seen.set(m.userId, (seen.get(m.userId) || 0) + PER_MSG_GAIN)
       }
       for (const [userId, gain] of seen) {
-        add(userId, gain)
+        add(userId, gain, qqKey)   // 结算发生在该群 → solo 续期仅限该群
         results.push({ userId, gain })
       }
       p.done = true
@@ -211,28 +211,29 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     return results
   }
 
-  /** 给某用户加友好度 */
-  function add(userId, gain) {
+  /** 给某用户加友好度；qqKey 存在时 solo 续期仅限该群（同群互动才续命，防跨群/私聊误续） */
+  function add(userId, gain, qqKey) {
     const id = String(userId)
     let u = users.get(id)
     const now = Date.now()
     if (!u) { u = { value: 0, firstSeen: now, lastSeen: now }; users.set(id, u) }
     u.value += gain
     u.lastSeen = now
-    // solo 续期：若该用户是某群的 solo 发起人且友好度真正上升，刷新其 solo 计时
-    if (gain > 0 && solos.size) {
-      for (const [qqKey, s] of solos) {
-        if (s.userId === id) s.lastGainAt = now
-      }
+    // solo 续期：仅当增益发生在该群（qqKey）且该用户是其 solo 发起人时才刷新。
+    // 私聊/其他群的友好度增长不会给此群 solo 续命 —— 否则活跃用户(如 23012321)
+    // 的 solo 会被处处续期而永不退出。
+    if (gain > 0 && qqKey) {
+      const s = solos.get(qqKey)
+      if (s && s.userId === id) s.lastGainAt = now
     }
     // 友好度有实际变化 → 触发防抖落盘
     if (gain !== 0) markPersist()
     return u.value
   }
 
-  /** @ 万生玲的用户 +5 */
-  function boost(userId) {
-    return add(userId, AT_GAIN)
+  /** @ 万生玲的用户 +5（qqKey=所在群，用于 solo 续期限定） */
+  function boost(userId, qqKey) {
+    return add(userId, AT_GAIN, qqKey)
   }
 
   /** @ 触发：该群进入 solo 并（重新）记录发起人。重复 @ 即切换到最新发起人 */
