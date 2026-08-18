@@ -314,7 +314,7 @@ export function apply(ctx, rawConfig = {}) {
     const text = OneBotClient.extractText(msg.message)
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
     const isAt = selfId ? isAtBot(msg.message, selfId) : false
-    // 图片段（作为消息内容的一部分随回复分析，不单独触发）
+    // 图片段（表情包也是 image 段；face 系统表情不在此列，直接丢弃）
     const imageSegs = extractImages(msg.message)
     const hasImage = imageSegs.length > 0
     if (!text && !isAt && !hasImage) return
@@ -337,13 +337,22 @@ export function apply(ctx, rawConfig = {}) {
     //   导致每条消息都被误判命中而提前 return，阻断正常收发。
     if (await handleFriendliness(text, msg, target, qqKey, isGroup, allowWork)) return
 
-    // 纯图片消息（无文字无@）：保存图片并只入聊天记录（供后续回复用视觉工具查看），不触发回复、不单独分析
+    // 纯图片消息（无文字无@）：
+    //   - 平时(非 solo)：保存图片只入聊天记录，不触发回复
+    //   - solo 模式：触发"看图后主动回复"，但仍走冷却闸（冷却中只缓冲，出冷却才回）
+    //   - 私聊或能量关闭：直接丢弃
+    let soloImageTrigger = false
     if (!text && !isAt && hasImage) {
-      if (isGroup && gcfg.energy?.enabled) {
-        const saved = await saveImage(imageSegs[0], gcfg.workdir, (a, p) => bot.request(a, p))
+      if (!isGroup || !gcfg.energy?.enabled) return
+      const saved = await saveImage(imageSegs[0], gcfg.workdir, (a, p) => bot.request(a, p))
+      if (!friends.isSolo(qqKey)) {
         energy.record(qqKey, String(msg.user_id ?? '?'), saved ? `（发了张图片：${saved.path}）` : '（发了张图片）')
+        return
       }
-      return
+      // solo：路径带进占位文本走回复流程（清空 imageSegs 避免下方重复保存）
+      text = saved ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回）` : '（对方发了一张图片，但读不了内容）'
+      imageSegs.length = 0
+      soloImageTrigger = true
     }
 
     // 群聊：观察成员发言 + 友好度窗口记录 + @加友好度 + 讨论触发检查 + 结算检查
@@ -396,9 +405,12 @@ export function apply(ctx, rawConfig = {}) {
         }
       }
 
-      // 被 @ 时强制触发（点名就得回）并进入 solo（记录发起人），否则正常 feed
+      // 被 @ 时强制触发（点名就得回）并进入 solo（记录发起人），否则正常 feed；
+      // solo 纯图（soloImageTrigger）出冷却即触发"看图后主动回复"（不越过冷却——冷却期已在上面缓冲）
       if (isAt) {
         friends.enterSolo(qqKey, String(msg.user_id ?? '?'))
+        energy.force(qqKey)
+      } else if (soloImageTrigger) {
         energy.force(qqKey)
       } else {
         // 挚友说话成本：挚友扣 17 能量（比普通 10 更积极），否则默认 msgCost
