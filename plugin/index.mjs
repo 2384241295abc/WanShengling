@@ -258,15 +258,15 @@ export function apply(ctx, rawConfig = {}) {
   /**
    * 友好度查询命令处理。
    * 语法（兼容全角 ！）：
-   *   「友好度」              → 群内查当前群（私聊报错：需带群号）
-   *   「友好度 <群号>」        → 查指定群（群内/私聊皆可）
+   *   「/友好度」              → 群内查当前群（私聊报错：需带群号）
+   *   「/友好度 <群号>」        → 查指定群（群内/私聊皆可）
    * 输出：该群全员按友好度降序，QQ号+称呼+友好度+等级。
    * 权限：受 allowWork 白名单约束（非白名单用户拒绝）。
    * @returns {Promise<boolean>} 命中并处理返回 true
    */
   async function handleFriendliness(fullText, msg, target, qqKey, isGroup, allowWork) {
     // 仅整条消息为「友好度」或「友好度 <群号>」才视为命令（避免"友好度是啥意思"这类聊天被误截）
-    const m = /^(?:!|！)?\s*友好度\s*(\d+)?\s*$/.exec(fullText || '')
+    const m = /^\/\s*友好度\s*(\d+)?\s*$/.exec(fullText || '')
     if (!m) return false
     // 命中命令
     if (!allowWork) {
@@ -412,8 +412,8 @@ export function apply(ctx, rawConfig = {}) {
       }
     }
 
-    // 「清除缓存」命令：仅白名单用户(23012321)私聊可触发，清除全部群一周前的聊天记录
-    if (!isGroup && allowWork && config.clearCommand && text === config.clearCommand) {
+    // 「清除缓存」命令：/ 前缀触发（指令类统一），仅白名单用户(23012321)可执行，清除全部群一周前的聊天记录
+    if (allowWork && text === `/${config.clearCommand}`) {
       let total = 0
       for (const [gqk, cfg] of Object.entries(groups.list())) {
         if (!gqk.startsWith('qq-group-') || !cfg?.workdir) continue
