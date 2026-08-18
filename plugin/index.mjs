@@ -274,6 +274,10 @@ export function apply(ctx, rawConfig = {}) {
       const gctx = energy.getContext(qqKey, true)   // 省略"当前"这条仅剩历史，冷却期消息已在历史里
       if (gctx) content.push({ type: 'text', text: gctx })
     }
+    // 🔒 冷却期可能有纯图消息（占位文本含图片路径）：从 energy 历史提取并注入图片提示，
+    //    否则 memoryEnabled 模式下模型只读 chatlog（纯图记录无路径）→ 不知道有图 → 臆想"打不开"
+    const imgHint = energy.pendingImageHint?.(qqKey)
+    if (imgHint) content.push({ type: 'text', text: imgHint })
     content.push({ type: 'text', text: '（刚刚有人说话了，自然接一句。）' })
     const scopeNote = gcfg.allowOutside
       ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`

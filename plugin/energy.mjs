@@ -251,9 +251,19 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     if (st.history.length > keep) st.history = st.history.slice(-keep)
   }
 
+  /** 从冷却期缓冲历史提取含图片路径的消息（纯图占位文本），供冷却后自动回复注入图片提示 */
+  function pendingImageHint(qqKey) {
+    const st = states.get(qqKey)
+    if (!st || !st.history?.length) return ''
+    const imgs = st.history
+      .filter((m) => m.text?.includes('发了一张图片') && m.text?.includes('qqimg'))
+      .map((m) => m.text)
+    return imgs.length ? `（冷却期收到了图片消息：${imgs[imgs.length - 1]}）` : ''
+  }
+
   function dispose() {
     states.clear()
   }
 
-  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, feedCooldown, breakCooldown, cooldownExpired }
+  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, feedCooldown, breakCooldown, cooldownExpired, pendingImageHint }
 }
