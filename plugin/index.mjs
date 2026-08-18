@@ -190,6 +190,24 @@ export function apply(ctx, rawConfig = {}) {
   /** qqKey -> setTimeout 句柄（冷却到期触发回复用；disposer 需清理） */
   const cooldownTimers = new Map()
 
+  // 🔒 per-群消息串行队列：同群消息严格按到达顺序处理。
+  // 此前 bot.on('message') 对每条消息 fire-and-forget 并发处理，导致两个竞态 bug：
+  //  ① 冷却失效：消息 A 触发回复后 startCooldown 在 promptQueue await 之后才设置，
+  //     期间到达的消息 B 读到 inCooldown=false → 绕过冷却连续回复；
+  //  ② 图片误删：消息 B 纯图 register 落在消息 A 回合内，A 的 turn/end cleanup 误删 B 的图。
+  // 串行化后：前一条消息(含 startCooldown/registerImages)完成后才处理下一条，两个竞态一并消除。
+  const msgQueues = new Map()
+
+  /** 按 qqKey 入队并返回串行 Promise 链（key: 群号 或 私聊 p<user_id>） */
+  function enqueueMsg(key, fn) {
+    const prev = msgQueues.get(key) || Promise.resolve()
+    const next = prev
+      .then(fn)
+      .catch((err) => log('warn', '[qq-bridge] 消息处理异常: %s', err?.message))
+    msgQueues.set(key, next)
+    return next
+  }
+
   /** 进入冷却并安排到期回调：冷却期有积累的新消息时，到期后主动触发一次回复（依据=冷却期聊天记录） */
   function startCooldown(qqKey, groupId) {
     const cdMs = config.energy?.cooldownMs ?? DEFAULT_COOLDOWN_MS
@@ -498,7 +516,11 @@ export function apply(ctx, rawConfig = {}) {
     // 记录机器人自身 QQ 号（heartbeat/lifecycle 都带 self_id），供 @ 检测
     if (ev && ev.self_id) selfId = String(ev.self_id)
   })
-  bot.on('message', (msg) => { void onQqMessage(msg) })
+  bot.on('message', (msg) => {
+    // 按群/私聊串行处理（见 enqueueMsg 注释：消除冷却竞态 + 图片回合交错）
+    const key = msg.message_type === 'group' ? `g${msg.group_id}` : `p${msg.user_id ?? '?'}`
+    void enqueueMsg(key, () => onQqMessage(msg))
+  })
   bot.on('error', (err) => log('warn', '[qq-bridge] onebot: %s', err.message))
   bot.on('reconnecting', (r) => log('info', '[qq-bridge] 重连中: %j', r))
   bot.connect()
@@ -554,6 +576,7 @@ export function apply(ctx, rawConfig = {}) {
       writeStatus()                  // 最终落盘一次状态
       for (const t of cooldownTimers.values()) clearTimeout(t)
       cooldownTimers.clear()
+      msgQueues.clear()            // 串行队列：dispose 后不再入队新消息
       friends.dispose()            // 最终保存友好度 + 清理持久化定时器
       energy.dispose()
       bot.close()                  // 关 WS + 从 activeByUrl 注销 + active=false
