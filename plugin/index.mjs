@@ -17,6 +17,9 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { writeFileSync, renameSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import { OneBotClient } from './onebot-client.mjs'
 import { resolveConfig } from './config.mjs'
 import { buildPersonaPrompt, ackText } from './persona.mjs'
@@ -185,6 +188,28 @@ export function apply(ctx, rawConfig = {}) {
     const t = cooldownTimers.get(qqKey)
     if (t) { clearTimeout(t); cooldownTimers.delete(qqKey) }
   }
+
+  // ---------- 后台状态查询：周期落盘 ~/.dsh/qq-bridge-energy.json（cat 即可查看） ----------
+  const statusFile = join(homedir(), '.dsh', 'qq-bridge-energy.json')
+  function writeStatus() {
+    try {
+      const groups = {}
+      for (const [qqKey, st] of Object.entries(energy.stats())) {
+        groups[qqKey] = {
+          energy: st.energy,
+          historyLen: st.historyLen,
+          cooldown: energy.inCooldown(qqKey),
+          solo: friends.isSolo(qqKey),
+          discussion: discussion.isActive(qqKey),
+        }
+      }
+      const tmp = statusFile + '.tmp'
+      writeFileSync(tmp, JSON.stringify({ updatedAt: new Date().toISOString(), groups }, null, 2))
+      renameSync(tmp, statusFile)
+    } catch (e) { log('warn', '[qq-bridge] 状态落盘失败: %s', e.message) }
+  }
+  const statusTimer = setInterval(writeStatus, 30000)
+  writeStatus()
 
   /**
    * 冷却到期、且期间有新消息时：基于「冷却期聊天记录 + 最新消息」主动回一条。
@@ -525,6 +550,8 @@ export function apply(ctx, rawConfig = {}) {
   const runtime = {
     dispose() {
       clearInterval(soloCheckInterval)
+      clearInterval(statusTimer)
+      writeStatus()                  // 最终落盘一次状态
       for (const t of cooldownTimers.values()) clearTimeout(t)
       cooldownTimers.clear()
       friends.dispose()            // 最终保存友好度 + 清理持久化定时器
