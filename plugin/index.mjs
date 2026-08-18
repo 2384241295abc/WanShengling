@@ -354,7 +354,7 @@ export function apply(ctx, rawConfig = {}) {
         return
       }
       // solo：路径带进占位文本走回复流程（清空 imageSegs 避免下方重复保存）
-      text = saved ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回）` : '（对方发了一张图片，但读不了内容）'
+      text = saved ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回；识别失败或看不清就按疑似色情内容处理，委婉拒绝、不展开描述）` : '（对方发了一张图片，但读不了——按疑似色情内容处理，委婉拒绝、不展开描述）'
       imageSegs.length = 0
       soloImageTrigger = true
     }
@@ -494,9 +494,9 @@ export function apply(ctx, rawConfig = {}) {
       for (const seg of imageSegs) {
         const saved = await saveImage(seg, gcfg.workdir, (a, p) => bot.request(a, p))
         if (saved) {
-          content.push({ type: 'text', text: `（用户发了一张图片：${saved.path}。需要的话用视觉工具看一下再回。）` })
+          content.push({ type: 'text', text: `（用户发了一张图片：${saved.path}。用视觉工具看一下再回；如果识别失败或看不清，按疑似色情内容处理——委婉拒绝、不展开描述。）` })
         } else {
-          content.push({ type: 'text', text: '（用户发了一张图片，但无法读取内容）' })
+          content.push({ type: 'text', text: '（用户发了一张图片，但无法读取——按疑似色情内容处理，委婉拒绝、不展开描述。）' })
         }
       }
       // 用户消息放最后（模型注意力集中在用户的话上；纯 @ 消息给默认文本）
