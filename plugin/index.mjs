@@ -467,17 +467,12 @@ export function apply(ctx, rawConfig = {}) {
       await promptQueue(sessionId, content, target, text || '（对方@了你）')
       // 群聊：回复已入队，重置能量（开始下一轮衰减）+ 进入回复冷却
       if (isGroup && gcfg.energy?.enabled) {
-        if (friends.isSolo(qqKey)) {
-          // solo 状态：@ 触发陪聊，每次回复后能量设为固定值（默认 10），保持快速回复节奏
-          const soloEnergy = config.energy?.soloReplyEnergy ?? 10
-          energy.forceTo(qqKey, soloEnergy)
-          log('info', '[qq-bridge] 群 %s solo 模式回复，能量设置为 %d', qqKey, soloEnergy)
-        } else if (discussion.isActive(qqKey)) {
+        if (discussion.isActive(qqKey)) {
           // 讨论模式：每次回复后能量重置 30~60
           discussion.onReply(qqKey)
           log('info', '[qq-bridge] 群 %s 讨论中回复，能量已重置', qqKey)
         } else {
-          // 🔒 默认节奏：回复后进入冷却(锁 -1/缓冲消息/到期自动评估)，能量在到期后按配置恢复
+          // 🔒 统一节奏（含 solo）：回复后进入冷却(锁 -1/缓冲消息/到期自动评估)，能量在到期后按配置恢复
           startCooldown(qqKey, msg.group_id)
         }
       }
