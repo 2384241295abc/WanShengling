@@ -249,7 +249,8 @@ export function apply(ctx, rawConfig = {}) {
    * @returns {Promise<boolean>} 命中并处理返回 true
    */
   async function handleFriendliness(fullText, msg, target, qqKey, isGroup, allowWork) {
-    const m = /^(?:!|！)?\s*友好度\s*(\d+)?/.exec(fullText || '')
+    // 仅整条消息为「友好度」或「友好度 <群号>」才视为命令（避免"友好度是啥意思"这类聊天被误截）
+    const m = /^(?:!|！)?\s*友好度\s*(\d+)?\s*$/.exec(fullText || '')
     if (!m) return false
     // 命中命令
     if (!allowWork) {
@@ -452,8 +453,6 @@ export function apply(ctx, rawConfig = {}) {
         const gctx = energy.getContext(qqKey, fedCurrentMsg)   // fedCurrentMsg=true 时省略当前待回应消息，防重复/对错话
         if (gctx) content.push({ type: 'text', text: gctx })
       }
-      // 纯 @ 消息（文本为空）给默认文本，否则 prompt 无用户消息
-      content.push({ type: 'text', text: text || '（对方@了你）' })
       const scopeNote = gcfg.allowOutside
         ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
         : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
@@ -462,6 +461,8 @@ export function apply(ctx, rawConfig = {}) {
       if (!allowWork) {
         content.push({ type: 'text', text: '（安全约束：你仅作为万生玲聊天。禁止读取、写入、执行本机任何文件；除联网搜索外，禁止调用其他工具。）' })
       }
+      // 用户消息放最后（模型注意力集中在用户的话上；纯 @ 消息给默认文本）
+      content.push({ type: 'text', text: text || '（对方@了你）' })
 
       // 异步入队（accepted 即返回；回复走事件流）
       await promptQueue(sessionId, content, target, text || '（对方@了你）')
