@@ -7,7 +7,7 @@
  *
  * 模块化结构（各模块独立可调/可测，为可视化配置工程铺路）：
  *   config.mjs         配置解析（全局默认/群覆盖/优先级，集中可调项）
- *   persona.mjs        人设与回复风格（当前默认人设：万生玲）
+ *   persona.mjs        人设与回复风格（当前默认人设：机器人）
  *   group-config.mjs   群配置管理器（按群覆盖全局默认）
  *   energy.mjs         群聊能量阈值机制（模拟真人"不是每条都回"）
  *   session.mjs        会话管理（cwd 校验/归档重建）
@@ -100,6 +100,7 @@ export function apply(ctx, rawConfig = {}) {
     log,
     // 上下文里把 QQ 号解析成可读昵称（members 已同步时）
     resolveName: (userId, qqKey) => members.nameOf(qqKey, userId),
+    botName: config.botName,
   })
   const sessions = createSessionManager({
     api: ctx.apiProxy,
@@ -114,7 +115,7 @@ export function apply(ctx, rawConfig = {}) {
     maxChunkLength: config.maxChunkLength,
     forceFlushMs: config.forceFlushMs,
     log,
-    // 万生玲回复发出后回灌到该群聊天历史（供下一轮自省衔接，不扣能量）
+    // 机器人回复发出后回灌到该群聊天历史（供下一轮自省衔接，不扣能量）
     onReply: ({ target, text }) => {
       if (config.energy?.enabled && target?.message_type === 'group' && target.group_id && text) {
         const gk = qqSessionId('group', target.group_id)
@@ -363,7 +364,7 @@ export function apply(ctx, rawConfig = {}) {
       members.observe(qqKey, String(msg.user_id ?? '?'), text)
       friends.recordMessage(qqKey, String(msg.user_id ?? '?'))
       discussion.recordActivity(qqKey, String(msg.user_id ?? '?'))
-      // 结算检查：万生玲发言后满 5 句 → 结算友好度窗口
+      // 结算检查：机器人发言后满 5 句 → 结算友好度窗口
       const settled = friends.checkSettle(qqKey)
       if (settled.length) log('info', '[qq-bridge] 友好度结算 %s', JSON.stringify(settled))
       // 惰性同步成员列表（昵称/群名片），每个群首次触发一次
@@ -382,10 +383,10 @@ export function apply(ctx, rawConfig = {}) {
         // 已同步过：每次消息也检查活跃触发（2分钟内>5人）
         discussion.checkEnter(qqKey, friends.groupTotalAll(qqKey), memberCounts.get(qqKey) || 0, discussion.recentSpeakers(qqKey))
       }
-      // @ 万生玲的用户友好度 +5（无论是否触发回复）
+      // @ 机器人的用户友好度 +5（无论是否触发回复）
       if (isAt) {
         friends.boost(String(msg.user_id ?? '?'), qqKey)
-        log('info', '[qq-bridge] 用户 %s @万生玲，友好度 +5 → %d', msg.user_id, friends.get(msg.user_id))
+        log('info', '[qq-bridge] 用户 %s @机器人，友好度 +5 → %d', msg.user_id, friends.get(msg.user_id))
       }
     }
 
@@ -470,7 +471,7 @@ export function apply(ctx, rawConfig = {}) {
       if (isGroup) {
         const mctx = members.buildContext(qqKey, selfId)
         if (mctx) content.push({ type: 'text', text: mctx })
-        // 讨论环境提示：让万生玲发言更符合"多人讨论"氛围
+        // 讨论环境提示：让机器人发言更符合"多人讨论"氛围
         const dctx = discussion.getContext(qqKey)
         if (dctx) content.push({ type: 'text', text: dctx })
       }
@@ -487,7 +488,7 @@ export function apply(ctx, rawConfig = {}) {
       content.push({ type: 'text', text: scopeNote })
       // 权限收束：非白名单用户只聊天，禁止触碰本机文件（联网搜索/视觉看图不受限——人设需要查词/看图）
       if (!allowWork) {
-        content.push({ type: 'text', text: '（安全约束：你仅作为万生玲聊天。禁止读取、写入、执行本机文件（视觉工具仅可查看提示中给出的图片路径）；除联网搜索和看图外，禁止调用其他工具。）' })
+        content.push({ type: 'text', text: `（安全约束：你仅作为${config.botName || '我'}聊天。禁止读取、写入、执行本机文件（视觉工具仅可查看提示中给出的图片路径）；除联网搜索和看图外，禁止调用其他工具。）` })
       }
       // 图片：保存到工作目录并提示模型用视觉工具查看（deepseek 纯文本模型不能直接接收图片）
       for (const seg of imageSegs) {
@@ -514,7 +515,7 @@ export function apply(ctx, rawConfig = {}) {
           startCooldown(qqKey, msg.group_id)
         }
       }
-      // 万生玲发言：群聊标记友好度结算点（等后5句到齐后结算）
+      // 机器人发言：群聊标记友好度结算点（等后5句到齐后结算）
       if (isGroup) {
         friends.markReply(qqKey, selfId)
       } else {

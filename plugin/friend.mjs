@@ -1,24 +1,24 @@
 /**
  * friend.mjs —— 成员友好度系统
  *
- * 目标：让万生玲对每个成员有"熟悉度"，影响她的反应与能量消耗。
+ * 目标：让机器人对每个成员有"熟悉度"，影响她的反应与能量消耗。
  *
  * 核心规则（用户确认）：
  *   - 友好度按【用户维度】跨群共享（同一 QQ 号在所有群同一友好度）
  *   - 初始友好度 0
- *   - 万生玲每次发言，其【前后各 5 条】消息内的发言者友好度 +1（同人多条多次 +1）
- *   - 被 @ 时，@ 万生玲的用户友好度额外 +5
+ *   - 机器人每次发言，其【前后各 5 条】消息内的发言者友好度 +1（同人多条多次 +1）
+ *   - 被 @ 时，@ 机器人的用户友好度额外 +5
  *   - 等级：0~1 陌生 | 2~160 认识 | 160~240 熟悉 | >240 挚友
  *   - 挚友：每句话减少 7 能量
- *   - Solo"点名"模式：群内有人 @ 万生玲 → 该群进入 solo，记录发起人；
- *     万生玲回复后能量设为 10（加快回复节奏陪发起人）；
+ *   - Solo"点名"模式：群内有人 @ 机器人 → 该群进入 solo，记录发起人；
+ *     机器人回复后能量设为 10（加快回复节奏陪发起人）；
  *     当发起人友好度超过 soloIdleMs（默认 60s）无上升 → 退出 solo。
  *
  * 接口：
  *   createFriendsManager({ log })
- *     → feedWindow(qqKey, userId)    万生玲发言时调用，结算前后5句窗口内成员 +1
+ *     → feedWindow(qqKey, userId)    机器人发言时调用，结算前后5句窗口内成员 +1
  *     → recordMessage(qqKey, userId) 记录一条消息到窗口（供 feedWindow 用）
- *     → boost(qqKey, userId)         @ 万生玲的用户 +5
+ *     → boost(qqKey, userId)         @ 机器人的用户 +5
  *     → enterSolo(qqKey, userId)     @ 触发：该群进入 solo 并记录发起人（重复@即刷新）
  *     → isSolo(qqKey)                该群当前是否 solo
  *     → checkSolosExpiry(now?)       清理超时未上升的 solo；返回退出的 qqKey[]（定时器调用）
@@ -47,11 +47,11 @@ export const LEVELS = [
   { threshold: -Infinity, level: 'stranger', label: '陌生' },
 ]
 
-/** 前后窗口大小（万生玲发言前/后各 N 条） */
+/** 前后窗口大小（机器人发言前/后各 N 条） */
 export const WINDOW = 5
 /** 窗口内每条发言的友好度增量 */
 export const PER_MSG_GAIN = 1
-/** @ 万生玲的友好度增量 */
+/** @ 机器人的友好度增量 */
 export const AT_GAIN = 5
 /** 挚友每句能量减免 */
 export const BEST_FRIEND_ENERGY_COST = 17   // 挚友每次说话扣除的能量（比普通 10 更积极）
@@ -71,7 +71,7 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
   const windows = new Map()
   /** qqKey -> Set<userId> 该群全部成员（供 groupTotalAll 精确计算） */
   const groupMemberSets = new Map()
-  /** qqKey -> 待结算的发言结算点（万生玲发言后等后5句） */
+  /** qqKey -> 待结算的发言结算点（机器人发言后等后5句） */
   const pendingSettles = new Map()
   /** qqKey -> { userId, lastGainAt } solo 状态（@ 触发，见 enterSolo） */
   const solos = new Map()
@@ -161,7 +161,7 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
   }
 
   /**
-   * 万生玲发言时调用：入队一个结算点（记录万生玲那条的 seq）。
+   * 机器人发言时调用：入队一个结算点（记录机器人那条的 seq）。
    * 允许连续发言时多个结算点排队（不再覆盖丢弃），按序分别结算。
    */
   function markReply(qqKey, selfId) {
@@ -174,7 +174,7 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
 
   /**
    * 结算检查：每条新消息后调用。对每个已满足"发言后满 WINDOW 句"的结算点，
-   * 只统计该点前后各 WINDOW 条（seq ∈ [seq-WINDOW, seq+WINDOW]）内、非万生玲自己的发言者 +1。
+   * 只统计该点前后各 WINDOW 条（seq ∈ [seq-WINDOW, seq+WINDOW]）内、非机器人自己的发言者 +1。
    * @returns {Array<{userId,gain}>} 本次所有待结算点合并的明细；无则 []
    */
   function checkSettle(qqKey) {
@@ -194,7 +194,7 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
       const seen = new Map()
       for (const m of w.list) {
         if (m.seq < lo || m.seq > hi) continue      // 限定 ±5 窗口（修复范围外旧消息算入）
-        if (String(m.userId) === String(p.selfId)) continue // 排除万生玲自己
+        if (String(m.userId) === String(p.selfId)) continue // 排除机器人自己
         seen.set(m.userId, (seen.get(m.userId) || 0) + PER_MSG_GAIN)
       }
       for (const [userId, gain] of seen) {
@@ -231,7 +231,7 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     return u.value
   }
 
-  /** @ 万生玲的用户 +5（qqKey=所在群，用于 solo 续期限定） */
+  /** @ 机器人的用户 +5（qqKey=所在群，用于 solo 续期限定） */
   function boost(userId, qqKey) {
     return add(userId, AT_GAIN, qqKey)
   }

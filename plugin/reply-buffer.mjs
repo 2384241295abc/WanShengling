@@ -50,7 +50,7 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
       if (reason && reason !== 'completed') {
         await sendText(buf.qqTarget, `（回合结束：${reason}）`).catch(() => {})
       }
-      // 回灌万生玲刚发的回复（供下一轮上下文自省，避免重复/衔接断裂）
+      // 回灌机器人刚发的回复（供下一轮上下文自省，避免重复/衔接断裂）
       onReply({ target: buf.qqTarget, text })
     } else {
       // 长回复进行中：仅在确实超时才提示，避免打扰（自然口吻）

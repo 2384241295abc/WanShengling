@@ -29,6 +29,7 @@ export const DEFAULTS = {
 
   // 全局人设 / 风格（所有群继承；groups 可覆盖）
   persona: undefined,          // undefined = 使用内置 DEFAULT_PERSONA
+  botName: '',                 // 机器人显示名（聊天记录/安全约束里对自己的称呼）；空=用"我"
   replyStyle: 'default',       // 'default' | 'short' | 'detailed' | 'casual' | 'emoji' | 'serious'
   allowOutside: false,         // 是否允许读取工作目录外文件
   workdir: '',                 // 全局默认工作目录（空=每群自动生成）

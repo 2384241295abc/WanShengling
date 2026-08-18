@@ -35,8 +35,10 @@ export const DEFAULT_ENERGY = {
   cooldownMs: 5000,          // 回复冷却：刚回复后这些毫秒内普通消息不触发，积累聊天记录后统一评估
 }
 
-export function createEnergyManager({ energy = {}, log = () => {}, resolveName = (userId) => userId } = {}) {
+export function createEnergyManager({ energy = {}, log = () => {}, resolveName = (userId) => userId, botName = '我' } = {}) {
   const opts = { ...DEFAULT_ENERGY, ...energy }
+  /** 机器人显示名（聊天记录里自己的称呼；配置 botName 可改） */
+  const selfName = botName || '我'
   /** qqKey -> { energy, lastTick, history: [{user, text, at}] } */
   const states = new Map()
 
@@ -191,7 +193,7 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     return res
   }
 
-  /** 取某群最近聊天记录（供 prompt 上下文）——发言者经 resolveName 解析为可读昵称；bot 自己标为万生玲
+  /** 取某群最近聊天记录（供 prompt 上下文）——发言者经 resolveName 解析为可读昵称；bot 自己标为 botName
    *  @param {boolean} [omitLast] 若 true，跳过最新一条（调用方刚经 feed 写入的"当前待回应消息"，
    *        避免它与 index 单独传入的 user message 重复出现 → 模型不会对错消息/接旧话）。
    */
@@ -202,14 +204,14 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     if (omitLast) list = list.slice(0, -1)     // 去掉当前这条（正被回应的那句）
     if (!list.length) return ''
     const lines = list.map((m) => {
-      const name = m.user === 'self' ? '万生玲' : resolveName(m.user, qqKey)
+      const name = m.user === 'self' ? selfName : resolveName(m.user, qqKey)
       return `${name}: ${m.text}`
     }).join('\n')
     return `（以下是该群最近的聊天记录（含你自己上一条的回复），请自然地接话：不要复述记录、不要重复自己刚说过的话：\n${lines}）`
   }
 
   /**
-   * 记录万生玲自己刚发出的一条回复到上下文历史（不扣能量、不影响触发判断）。
+   * 记录机器人自己刚发出的一条回复到上下文历史（不扣能量、不影响触发判断）。
    * 让模型在下一轮能看到自己上一条说了什么，避免重复与衔接断裂。
    */
   function recordBotReply(qqKey, text) {

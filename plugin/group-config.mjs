@@ -23,7 +23,7 @@ import { DEFAULT_ENERGY } from './energy.mjs'
 /** 每群配置的完整字段（全局默认值在此，按群 groups 覆盖） */
 export function defaultGroupConfig(global = {}) {
   return {
-    persona: global.persona ?? DEFAULT_PERSONA,  // 默认注入万生玲人设（全局）
+    persona: global.persona ?? DEFAULT_PERSONA,  // 默认注入机器人人设（全局）
     replyStyle: global.replyStyle ?? 'default',  // 'default' | 'short' | 'detailed' | 'casual' | 'emoji' | 'serious'
     workdir: '',                 // 专属工作目录；空=默认规则生成
     allowOutside: global.allowOutside ?? false,  // 是否允许读取工作目录外文件

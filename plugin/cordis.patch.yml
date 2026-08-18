@@ -1,14 +1,42 @@
-# dsh-qq-bridge bundle patch —— 随桌面应用分发时的 bundle 层声明
-# （本地开发走 profile 补丁层，见 PLAN.md §3.2；此文件供 M3/M4 分发集成）
+# dsh-qq-bridge 配置模板（补丁层）
+# ─────────────────────────────────────────────
+# 用法：把本文件内容合并进你的 profile 补丁（如 ~/.dsh/profiles/web/cordis.patch.yml），
+# 按需修改下方配置。所有"定制点"都有注释，其余保持默认即可。
+# ─────────────────────────────────────────────
 - insert:
     - id: qq-bridge
       name: '@dsh-qq/qq-bridge'
       config:
-        onebotWs: 'ws://127.0.0.1:6700'
+        # OneBot 11（NapCat 等）正向 WS 地址与 access token
+        onebotWs: 'ws://127.0.0.1:3001'
         onebotToken: ''
-        sessionCwd: ''
-        ack: true
-        stallNoticeMs: 60000
-        forceFlushMs: 30000
-        autoAnswer: 'reject'
-        maxChunkLength: 3500
+        heartbeatMs: 23000
+
+        # 机器人显示名（聊天记录里对自己的称呼；留空=用"我"）
+        botName: ''
+
+        # 全局人设（改这里热更新生效，无需重启）—— 你的机器人人设
+        persona: |-
+          你叫 XX，一个……（身份/性格/说话风格/回复规则写在这里）
+          【性格】
+          - ...
+          【说话风格】
+          - ...
+          【回复规则】
+          1. ...
+
+        # 工作指令白名单：私聊以 ! 开头的消息走真实 DSH 代理（仅列表内用户可用）
+        workUsers: []            # 空=全部允许；如 ['23012321'] 仅该用户
+
+        # 群聊能量节奏（像真人不是每条都回）
+        energy:
+          range: [100, 1000]     # 回复后能量随机恢复区间
+          # cooldownMs: 5000     # 回复冷却毫秒
+
+        # 按群覆盖（key = 群号数字）
+        groups:
+          '123456789':
+            replyStyle: 'casual'          # 'default'|'short'|'detailed'|'casual'|'emoji'|'serious'
+            workdir: '/Users/you/Documents/qqbot/123456789'
+            allowOutside: false
+            ack: false
