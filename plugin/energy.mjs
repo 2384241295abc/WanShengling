@@ -31,8 +31,7 @@ export const DEFAULT_ENERGY = {
   decayPerMin: 3,            // 每分钟能量衰减（原每秒3，改为每分钟3 = 慢60倍）
   msgCost: 10,
   contextWindow: 8,
-  soloReplyEnergy: 10,       // solo 状态每次回复后设置的能量（@ 触发快速陪聊）
-  soloIdleMs: 60000,         // solo 超时：发起人友好度超过该毫秒未上升则退出
+  soloIdleMs: 60000,         // solo 超时：发起人友好度超过该毫秒未上升则退出（solo 仅记录状态，节奏统一走冷却）
   cooldownMs: 5000,          // 回复冷却：刚回复后这些毫秒内普通消息不触发，积累聊天记录后统一评估
 }
 

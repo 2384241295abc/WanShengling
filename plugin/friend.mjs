@@ -21,7 +21,6 @@
  *     → boost(qqKey, userId)         @ 万生玲的用户 +5
  *     → enterSolo(qqKey, userId)     @ 触发：该群进入 solo 并记录发起人（重复@即刷新）
  *     → isSolo(qqKey)                该群当前是否 solo
- *     → soloUser(qqKey)              当前 solo 发起人 userId（无则 null）
  *     → checkSolosExpiry(now?)       清理超时未上升的 solo；返回退出的 qqKey[]（定时器调用）
  *     → get(userId)                  取用户友好度
  *     → level(userId)                取等级（'stranger'|'acquaintance'|'familiar'|'best'）
@@ -249,11 +248,6 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     return solos.has(qqKey)
   }
 
-  /** 当前 solo 发起人 userId（无 solo 返回 null） */
-  function soloUser(qqKey) {
-    return solos.get(qqKey)?.userId ?? null
-  }
-
   /**
    * 清理 solo：对每个处于 solo 的群，若发起人友好度超过 SOLO_IDLE_MS
    * （默认 60 秒）没有上升，则退出 solo。由外部定时器/消息驱动调用。
@@ -325,5 +319,5 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     return out
   }
 
-  return { get, level, levelLabel, recordMessage, markReply, checkSettle, boost, add, friendEnergyCost, groupTotal, groupTotalAll, setGroupMembers, buildContext, stats, enterSolo, isSolo, soloUser, checkSolosExpiry, dispose }
+  return { get, level, levelLabel, recordMessage, markReply, checkSettle, boost, add, friendEnergyCost, groupTotal, groupTotalAll, setGroupMembers, buildContext, stats, enterSolo, isSolo, checkSolosExpiry, dispose }
 }
