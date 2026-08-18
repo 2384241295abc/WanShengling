@@ -430,9 +430,9 @@ export function apply(ctx, rawConfig = {}) {
         ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
         : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
       content.push({ type: 'text', text: scopeNote })
-      // 权限收束：非白名单用户只聊天，禁止触碰本机文件
+      // 权限收束：非白名单用户只聊天，禁止触碰本机文件（联网搜索不受限——人设需要查词/梗）
       if (!allowWork) {
-        content.push({ type: 'text', text: '（安全约束：你仅作为万生玲聊天。禁止调用任何工具，禁止读取、写入、执行本机任何文件。）' })
+        content.push({ type: 'text', text: '（安全约束：你仅作为万生玲聊天。禁止读取、写入、执行本机任何文件；除联网搜索外，禁止调用其他工具。）' })
       }
 
       // 异步入队（accepted 即返回；回复走事件流）
