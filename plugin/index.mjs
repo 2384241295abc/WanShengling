@@ -371,11 +371,15 @@ export function apply(ctx, rawConfig = {}) {
 
       // 被 @ 时强制触发（点名就得回）并进入 solo（记录发起人），否则正常 feed；
       // solo 纯图（soloImageTrigger）出冷却即触发"看图后主动回复"（不越过冷却——冷却期已在上面缓冲）
+      // 🔒 solo 期间普通消息也强制触发（活跃群积极回应，不受能量阈值限制——能量高时普通消息 <0 才回会"假死"）
       if (isAt) {
         friends.enterSolo(qqKey, String(msg.user_id ?? '?'))
         energy.force(qqKey)
-      } else if (soloImageTrigger) {
+      } else if (soloImageTrigger || friends.isSolo(qqKey)) {
         energy.force(qqKey)
+        // solo 期间普通消息不写 history（force 不记录），手动补记一条保证上下文连贯
+        energy.record(qqKey, String(msg.user_id ?? '?'), text)
+        fedCurrentMsg = true
       } else {
         // 挚友说话成本：挚友扣 17 能量（比普通 10 更积极），否则默认 msgCost
         const friendCost = friends.friendEnergyCost(String(msg.user_id ?? '?'))
