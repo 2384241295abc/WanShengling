@@ -349,8 +349,10 @@ export function apply(ctx, rawConfig = {}) {
       if (energy.inCooldown(qqKey)) {
         if (isAt && text) {
           energy.breakCooldown(qqKey)   // @ 带文字打破冷却（真问题值得打断）
+        } else if (isAt) {
+          return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数 —— 彻底消除"问+紧跟裸@"二次回复
         } else {
-          // 冷却期消息（含裸 @：只@无文字）入历史+计数，不触发 —— 防"问一句+紧跟裸@"回两句
+          // 冷却期普通消息入历史+计数，不触发
           energy.feedCooldown(qqKey, String(msg.user_id ?? '?'), text)
           return
         }
