@@ -206,7 +206,7 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
       const name = m.user === 'self' ? '万生玲' : resolveName(m.user, qqKey)
       return `${name}: ${m.text}`
     }).join('\n')
-    return `（以下是该群最近的聊天记录，请基于这些内容自然地接话，不要复述记录本身：\n${lines}）`
+    return `（以下是该群最近的聊天记录（含你自己上一条的回复），请自然地接话：不要复述记录、不要重复自己刚说过的话：\n${lines}）`
   }
 
   /**
