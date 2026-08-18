@@ -345,12 +345,13 @@ export function apply(ctx, rawConfig = {}) {
       // 讨论模式退出检查（能量 < -24）
       discussion.checkExit(qqKey)
 
-      // 🔒 回复冷却：刚回复后 cdMs 内，普通消息只缓冲不触发；@ 可打破冷却
+      // 🔒 回复冷却：刚回复后 cdMs 内，普通消息只缓冲不触发；@ 带文字可打破冷却
       if (energy.inCooldown(qqKey)) {
-        if (isAt) {
-          energy.breakCooldown(qqKey)   // @ 打破冷却，继续走下面的触发逻辑
+        if (isAt && text) {
+          energy.breakCooldown(qqKey)   // @ 带文字打破冷却（真问题值得打断）
         } else {
-          energy.feedCooldown(qqKey, String(msg.user_id ?? '?'), text)  // 冷却期普通消息：入历史+计数，不触发
+          // 冷却期消息（含裸 @：只@无文字）入历史+计数，不触发 —— 防"问一句+紧跟裸@"回两句
+          energy.feedCooldown(qqKey, String(msg.user_id ?? '?'), text)
           return
         }
       }
