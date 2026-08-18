@@ -311,7 +311,7 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   async function onQqMessage(msg) {
-    const text = OneBotClient.extractText(msg.message)
+    let text = OneBotClient.extractText(msg.message)   // let：solo 纯图分支会改写为占位文本
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
     const isAt = selfId ? isAtBot(msg.message, selfId) : false
     // 图片段（表情包也是 image 段；face 系统表情不在此列，直接丢弃）
