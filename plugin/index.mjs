@@ -412,14 +412,14 @@ export function apply(ctx, rawConfig = {}) {
       }
     }
 
-    // 「清除缓存」命令（群聊，白名单内）：清除一周前的聊天记录
-    if (isGroup && config.clearCommand && text === config.clearCommand) {
-      if (!allowWork) {
-        log('info', '[qq-bridge] 用户 %s 无权限清除缓存(已忽略)', msg.user_id)
-        return
+    // 「清除缓存」命令：仅白名单用户(23012321)私聊可触发，清除全部群一周前的聊天记录
+    if (!isGroup && allowWork && config.clearCommand && text === config.clearCommand) {
+      let total = 0
+      for (const [gqk, cfg] of Object.entries(groups.list())) {
+        if (!gqk.startsWith('qq-group-') || !cfg?.workdir) continue
+        total += await clearChatOlderThanWeek(cfg.workdir)
       }
-      const removed = await clearChatOlderThanWeek(gcfg.workdir)
-      await bot.sendText(target, `🗑️ 已清除 ${removed} 条一周前的聊天记录（保留最近一周）。`).catch(() => {})
+      await bot.sendText(target, `🗑️ 已清除全部群共 ${total} 条一周前的聊天记录（保留最近一周）。`).catch(() => {})
       return
     }
 
