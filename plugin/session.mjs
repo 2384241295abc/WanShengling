@@ -67,14 +67,11 @@ export function createSessionManager({ api, log = () => {}, onRebuild = () => {}
         return stale.sessionId
       }
     }
-    // 4) 新建：优先 qqKey；冲突（已归档旧会话占着 id）退化为 qqKey-<时间戳>
-    let created = await api.sessions.create({ rpcId: randomUUID(), payload: { cwd: want, sessionId: qqKey } })
-    if (!created.result.ok && created.result.error?.code === 'session-conflict') {
-      created = await api.sessions.create({
-        rpcId: randomUUID(),
-        payload: { cwd: want, sessionId: `${qqKey}-${Date.now().toString(36)}` },
-      })
-    }
+    // 4) 新建：同名旧会话(stale,可能已归档)占用着 qqKey id——直接用它会导致
+    //    sessions.create 返回旧会话(同 id+同 cwd 会复用而非新建) → 回复写进隐藏会话。
+    //    故只要存在 stale 就用退化 id qqKey-<时间戳>；无 stale 才优先 qqKey。
+    const id = stale ? `${qqKey}-${Date.now().toString(36)}` : qqKey
+    const created = await api.sessions.create({ rpcId: randomUUID(), payload: { cwd: want, sessionId: id } })
     if (!created.result.ok) throw new Error(`${created.result.error?.code}: ${created.result.error?.message || 'session.create failed'}`)
     const sessionId = created.result.value.sessionId
     cache.set(qqKey, { sessionId, cwd: want })
