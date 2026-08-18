@@ -114,6 +114,8 @@ export function apply(ctx, rawConfig = {}) {
       reply.clear(qqKey)
     },
   })
+  // 好友度/档案管理（先于插件注册，features 需要它；顺序即依赖顺序）
+  const friends = createFriendsManager({ log, soloIdleMs: config.energy?.soloIdleMs })
   // 插件宿主：注册中心 + 内置插件（识图/指令），后续功能可继续在此 register
   const features = createFeatureRegistry()
   const visionFeature = createVisionFeature({ bot, config, groups, energy, friends, members, sessions, log })
@@ -146,7 +148,6 @@ export function apply(ctx, rawConfig = {}) {
     autoAnswer: config.autoAnswer,
     log,
   })
-  const friends = createFriendsManager({ log, soloIdleMs: config.energy?.soloIdleMs })
   const discussion = createDiscussionManager({ energy, log })
   // ---------- QQ → DSH ----------
 
