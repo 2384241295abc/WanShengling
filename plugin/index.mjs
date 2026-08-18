@@ -32,6 +32,17 @@ import { createDiscussionManager } from './discussion.mjs'
 export const name = 'qq-bridge'
 export const inject = ['apiProxy']
 
+/** 回复冷却默认时长（毫秒；energy.cooldownMs 覆盖） */
+const DEFAULT_COOLDOWN_MS = 5000
+
+/**
+ * 模块级「上一个 runtime」引用（进程内唯一，跨 HMR/apply 共享）。
+ * 🔴 迭代自动清理：每次新的 apply() 到来时，主动 dispose 上一个 runtime
+ * （关连接/清定时器/清缓冲），不等 Cordis 调旧 disposer（它不保证调用）。
+ * 这样版本迭代时旧实例资源被真正释放，而非仅靠 active 封堵。
+ */
+let prevRuntime = null
+
 /** QQ 会话 → DSH 会话 id（固定命名，重启后复用 Web UI 会话）。 */
 export function qqSessionId(messageType, id) {
   return `qq-${messageType}-${id}`
@@ -46,6 +57,15 @@ function isAtBot(message, selfId) {
 export function apply(ctx, rawConfig = {}) {
   // 1. 配置解析（环境变量 > 补丁 > 默认）
   const config = resolveConfig(rawConfig)
+
+  // 🔴 迭代自动清理：新 apply 到来时，主动释放上一个 runtime 的全部资源
+  //（关连接/清定时器/清 cooldown/solo interval/各 manager），避免旧的残留
+  if (prevRuntime) {
+    try { prevRuntime.dispose(); prevRuntime = null } catch (err) {
+      const _log = (lv, ...a) => ctx.logger?.[lv]?.(...a)
+      _log('warn', '[qq-bridge] 清理上一个 runtime 失败: %s', err?.message || err)
+    }
+  }
 
   // 2. 基础设施
   const bot = new OneBotClient({
@@ -67,7 +87,13 @@ export function apply(ctx, rawConfig = {}) {
     groups: config.groups,
     log,
   })
-  const energy = createEnergyManager({ energy: config.energy, log })
+  const members = createMembersManager({ log })
+  const energy = createEnergyManager({
+    energy: config.energy,
+    log,
+    // 上下文里把 QQ 号解析成可读昵称（members 已同步时）
+    resolveName: (userId, qqKey) => members.nameOf(qqKey, userId),
+  })
   const sessions = createSessionManager({
     api: ctx.apiProxy,
     log,
@@ -81,6 +107,13 @@ export function apply(ctx, rawConfig = {}) {
     maxChunkLength: config.maxChunkLength,
     forceFlushMs: config.forceFlushMs,
     log,
+    // 万生玲回复发出后回灌到该群聊天历史（供下一轮自省衔接，不扣能量）
+    onReply: ({ target, text }) => {
+      if (config.energy?.enabled && target?.message_type === 'group' && target.group_id && text) {
+        const gk = qqSessionId('group', target.group_id)
+        energy.recordBotReply(gk, text)
+      }
+    },
   })
   const handlers = createHandlers({
     api: ctx.apiProxy,
@@ -88,10 +121,8 @@ export function apply(ctx, rawConfig = {}) {
     autoAnswer: config.autoAnswer,
     log,
   })
-  const members = createMembersManager({ log })
-  const friends = createFriendsManager({ log })
+  const friends = createFriendsManager({ log, soloIdleMs: config.energy?.soloIdleMs })
   const discussion = createDiscussionManager({ energy, log })
-
   // ---------- QQ → DSH ----------
 
   /** 机器人自身 QQ 号（从 OneBot meta_event 获取，用于 @ 检测） */
@@ -129,6 +160,129 @@ export function apply(ctx, rawConfig = {}) {
     throw new Error(`${lastErr?.code || 'unknown'}: ${lastErr?.message || JSON.stringify(lastErr) || 'prompt rejected'}`)
   }
 
+  // ---------- 回复冷却(cooldown)定时器 ----------
+  /** qqKey -> setTimeout 句柄（冷却到期触发回复用；disposer 需清理） */
+  const cooldownTimers = new Map()
+
+  /** 进入冷却并安排到期回调：冷却期有积累的新消息时，到期后主动触发一次回复（依据=冷却期聊天记录） */
+  function startCooldown(qqKey, groupId) {
+    const cdMs = config.energy?.cooldownMs ?? DEFAULT_COOLDOWN_MS
+    energy.beginCooldown(qqKey, cdMs)
+    clearCooldownTimer(qqKey)
+    const timer = setTimeout(() => {
+      cooldownTimers.delete(qqKey)
+      // 到期：解除锁定、恢复能量；若有冷却期积累消息 → 主动回一条
+      const res = energy.cooldownExpired(qqKey)
+      if (res?.expired && res?.hasPending && config.energy?.enabled) {
+        void replyFromCooldown(qqKey, String(groupId)).catch((err) =>
+          log('warn', '[qq-bridge] 冷却后自动回复失败: %s', err?.message))
+      }
+    }, cdMs)
+    cooldownTimers.set(qqKey, timer)
+  }
+
+  function clearCooldownTimer(qqKey) {
+    const t = cooldownTimers.get(qqKey)
+    if (t) { clearTimeout(t); cooldownTimers.delete(qqKey) }
+  }
+
+  /**
+   * 冷却到期、且期间有新消息时：基于「冷却期聊天记录 + 最新消息」主动回一条。
+   * 复用 onQqMessage 的 prompt 构建思路，但不重跑观察/记录/结算副作用（防止重复计数）。
+   */
+  async function replyFromCooldown(qqKey, groupId) {
+    const gcfg = groups.get(qqKey)
+    if (!gcfg?.energy?.enabled) return
+    // 会话：cwd 与群配置一致才复用
+    const sessionId = await sessions.ensure(qqKey, gcfg.workdir)
+    const content = []
+    const persona = buildPersonaPrompt(gcfg)
+    if (persona) content.push({ type: 'text', text: persona })
+    const mctx = members.buildContext(qqKey, selfId)
+    if (mctx) content.push({ type: 'text', text: mctx })
+    const dctx = discussion.getContext(qqKey)
+    if (dctx) content.push({ type: 'text', text: dctx })
+    const gctx = energy.getContext(qqKey, true)   // 省略"当前"这条仅剩历史，冷却期消息已在历史里
+    if (gctx) content.push({ type: 'text', text: gctx })
+    content.push({ type: 'text', text: '（刚刚有人说话了，自然接一句。）' })
+    const scopeNote = gcfg.allowOutside
+      ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
+      : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
+    content.push({ type: 'text', text: scopeNote })
+    const target = { message_type: 'group', group_id: Number(groupId), user_id: 0 }
+    await promptQueue(sessionId, content, target, '冷却后自动回复')
+    friends.markReply(qqKey, selfId)
+  }
+
+  /**
+   * 友好度查询命令处理。
+   * 语法（兼容全角 ！）：
+   *   「友好度」              → 群内查当前群（私聊报错：需带群号）
+   *   「友好度 <群号>」        → 查指定群（群内/私聊皆可）
+   * 输出：该群全员按友好度降序，QQ号+称呼+友好度+等级。
+   * 权限：受 allowWork 白名单约束（非白名单用户拒绝）。
+   * @returns {Promise<boolean>} 命中并处理返回 true
+   */
+  async function handleFriendliness(fullText, msg, target, qqKey, isGroup, allowWork) {
+    const m = /^(?:!|！)?\s*友好度\s*(\d+)?/.exec(fullText || '')
+    if (!m) return false
+    // 命中命令
+    if (!allowWork) {
+      log('info', '[qq-bridge] 用户 %s 无权限查询友好度(已拒绝)', msg.user_id)
+      await bot.sendText(target, '⚠️ 你没有使用工作指令的权限').catch(() => {})
+      return true
+    }
+    // 确定目标群号：显式指定优先；否则群内用当前群；私聊必须显式
+    let targetGroupId = m[1]
+    if (!targetGroupId) {
+      if (isGroup && msg.group_id) {
+        targetGroupId = String(msg.group_id)
+      } else {
+        await bot.sendText(target, '⚠️ 私聊请带群号：友好度 859762634').catch(() => {})
+        return true
+      }
+    }
+    const targetQqKey = `qq-group-${targetGroupId}`
+    // 该群成员（含昵称）来自 members；若从未同步（或缓存为空）则实时拉取一次，
+    // 保证查询严格限定在本群成员，绝不混入其它群用户（修复"串群"）。
+    let mstats = (members.stats()[targetQqKey] || [])
+    if (!mstats.length) {
+      try {
+        const membersData = await bot.request('get_group_member_list', { group_id: targetGroupId })
+        if (Array.isArray(membersData)) {
+          members.syncGroup(targetQqKey, membersData)
+          friends.setGroupMembers(targetQqKey, membersData.map((mem) => mem.user_id))
+          mstats = members.stats()[targetQqKey] || []
+        }
+      } catch { /* 拉取失败则回退到已有缓存 */ }
+    }
+    const rows = new Map()
+    for (const mem of mstats) {
+      rows.set(String(mem.userId), { userId: String(mem.userId), name: mem.name || String(mem.userId), msgCount: mem.msgCount || 0 })
+    }
+    if (!rows.size) {
+      await bot.sendText(target, `该群（${targetGroupId}）暂无成员数据（可能是命令在小群/未同步，稍后再试）。`).catch(() => {})
+      return true
+    }
+    // ⚠️ 不再把全局 friends.stats() 补进来：友好度按 userId 跨群共享、无群归属，
+    //   补全会把别的群的用户混进本群 → 串群。严格只列本群成员。
+    const lines = [...rows.values()].map((r) => {
+      const val = friends.get(r.userId)
+      const lv = friends.levelLabel(r.userId)
+      const nm = r.name && r.name !== r.userId ? `${r.name}(${r.userId})` : r.userId
+      return `${nm}：友好度 ${val}（${lv}）`
+    }).sort((a, b) => {
+      // 按友好度降序：文本行里提取数值
+      const va = Number(/(?:友好度 )(-?\d+)/.exec(a)?.[1] ?? -1)
+      const vb = Number(/(?:友好度 )(-?\d+)/.exec(b)?.[1] ?? -1)
+      return vb - va
+    })
+    const body = `📊 群 ${targetGroupId} 友好度（${lines.length}人）:\n` + lines.join('\n')
+    log('info', '[qq-bridge] 查询友好度 群=%s 人数=%d', targetGroupId, lines.length)
+    await bot.sendText(target, body).catch(() => {})
+    return true
+  }
+
   async function onQqMessage(msg) {
     const text = OneBotClient.extractText(msg.message)
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
@@ -145,6 +299,13 @@ export function apply(ctx, rawConfig = {}) {
     const isGroup = msg.message_type === 'group'
     // 工作指令白名单：空=全部允许；非空=仅列表内用户可用（其他用户只聊天，禁文件访问）
     const allowWork = !config.workUsers?.length || config.workUsers.includes(String(msg.user_id ?? ''))
+
+    // 友好度查询命令（不走 DSH 代理，直接读内存状态）：
+    //   「友好度」或「友好度 <群号>」；群内不写群号查当前群，私聊必须带群号。
+    //   命中即处理并 return（绕开能量闸，命令不能被"未达阈值"吞掉）。
+    //   ⚠️ 必须 await：handleFriendliness 是 async，不 await 会拿到恒真的 Promise，
+    //   导致每条消息都被误判命中而提前 return，阻断正常收发。
+    if (await handleFriendliness(text, msg, target, qqKey, isGroup, allowWork)) return
 
     // 群聊：观察成员发言 + 友好度窗口记录 + @加友好度 + 讨论触发检查 + 结算检查
     if (isGroup) {
@@ -170,17 +331,30 @@ export function apply(ctx, rawConfig = {}) {
         // 已同步过：每次消息也检查活跃触发（2分钟内>5人）
         discussion.checkEnter(qqKey, friends.groupTotalAll(qqKey), memberCounts.get(qqKey) || 0, discussion.recentSpeakers(qqKey))
       }
-      // @ 万生玲的用户友好度 +5
+      // @ 万生玲的用户友好度 +5，并进入 solo 状态（记录发起人，回复后能量设为 10）
       if (isAt) {
         friends.boost(String(msg.user_id ?? '?'))
+        friends.enterSolo(qqKey, String(msg.user_id ?? '?'))
         log('info', '[qq-bridge] 用户 %s @万生玲，友好度 +5 → %d', msg.user_id, friends.get(msg.user_id))
       }
     }
 
     // 群聊能量机制：先记录+扣能量，未达阈值则不回复（像真人不是每条都回）
+    let fedCurrentMsg = false   // 本次回复是否经 feed（非@）触发 → 当前消息已在 history，上下文须 omitLast
     if (isGroup && gcfg.energy?.enabled) {
       // 讨论模式退出检查（能量 < -24）
       discussion.checkExit(qqKey)
+
+      // 🔒 回复冷却：刚回复后 cdMs 内，普通消息只缓冲不触发；@ 可打破冷却
+      if (energy.inCooldown(qqKey)) {
+        if (isAt) {
+          energy.breakCooldown(qqKey)   // @ 打破冷却，继续走下面的触发逻辑
+        } else {
+          energy.feedCooldown(qqKey, String(msg.user_id ?? '?'), text)  // 冷却期普通消息：入历史+计数，不触发
+          return
+        }
+      }
+
       // 被 @ 时强制触发（点名就得回），否则正常 feed
       if (isAt) {
         energy.force(qqKey)
@@ -190,6 +364,7 @@ export function apply(ctx, rawConfig = {}) {
         const cost = friendCost || (gcfg.energy.msgCost ?? 10)
         const triggered = energy.feed(qqKey, String(msg.user_id ?? '?'), text, cost)
         if (!triggered) return
+        fedCurrentMsg = true   // feed 已把当前消息写进 history
       }
       log('info', '[qq-bridge] 群 %s 触发回复（能量 %d）', qqKey, energy.getEnergy(qqKey))
     }
@@ -246,7 +421,7 @@ export function apply(ctx, rawConfig = {}) {
       const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
       if (fctx) content.push({ type: 'text', text: fctx })
       if (isGroup && gcfg.energy?.enabled) {
-        const gctx = energy.getContext(qqKey)
+        const gctx = energy.getContext(qqKey, fedCurrentMsg)   // fedCurrentMsg=true 时省略当前待回应消息，防重复/对错话
         if (gctx) content.push({ type: 'text', text: gctx })
       }
       // 纯 @ 消息（文本为空）给默认文本，否则 prompt 无用户消息
@@ -262,15 +437,20 @@ export function apply(ctx, rawConfig = {}) {
 
       // 异步入队（accepted 即返回；回复走事件流）
       await promptQueue(sessionId, content, target, text || '（对方@了你）')
-      // 群聊：回复已入队，重置能量（开始下一轮衰减）
+      // 群聊：回复已入队，重置能量（开始下一轮衰减）+ 进入回复冷却
       if (isGroup && gcfg.energy?.enabled) {
-        if (discussion.isActive(qqKey)) {
+        if (friends.isSolo(qqKey)) {
+          // solo 状态：@ 触发陪聊，每次回复后能量设为固定值（默认 10），保持快速回复节奏
+          const soloEnergy = config.energy?.soloReplyEnergy ?? 10
+          energy.forceTo(qqKey, soloEnergy)
+          log('info', '[qq-bridge] 群 %s solo 模式回复，能量设置为 %d', qqKey, soloEnergy)
+        } else if (discussion.isActive(qqKey)) {
           // 讨论模式：每次回复后能量重置 30~60
           discussion.onReply(qqKey)
           log('info', '[qq-bridge] 群 %s 讨论中回复，能量已重置', qqKey)
         } else {
-          const e = energy.reset(qqKey)
-          log('info', '[qq-bridge] 群 %s 已回复，能量重置为 %d', qqKey, e)
+          // 🔒 默认节奏：回复后进入冷却(锁 -1/缓冲消息/到期自动评估)，能量在到期后按配置恢复
+          startCooldown(qqKey, msg.group_id)
         }
       }
       // 万生玲发言：群聊标记友好度结算点（等后5句到齐后结算）
@@ -293,6 +473,9 @@ export function apply(ctx, rawConfig = {}) {
   // ---------- DSH → QQ ----------
 
   async function onSessionEvent(sessionId, event) {
+    // 🔴 防"老版本抢回复"：若本实例已被新实例替换(bot.active=false)，丢弃一切事件，
+    //    不再 flush/发送回复——避免旧实例和新的抢着回。
+    if (!bot.active) return
     // 为 question/approval 注入当前条目目标（活跃缓冲）
     const buf = reply.activeBuffer?.(sessionId)
     if ((event.type === 'question/requested' || event.type === 'approval/requested') && buf) {
@@ -319,13 +502,36 @@ export function apply(ctx, rawConfig = {}) {
       log('warn', '[qq-bridge] event: %s', err.message))
   })
 
+  // 周期检查：清理超时未上升的 solo 状态（发起人友好度超过
+  // config.energy.soloIdleMs 无上升即退出）。用定时器而非消息驱动，
+  // 避免群冷场时 stale solo 长期悬挂；每 10s 检查一次，及时响应超时。
+  const SOLO_CHECK_INTERVAL_MS = 10 * 1000
+  const soloCheckInterval = setInterval(() => {
+    const expired = friends.checkSolosExpiry()
+    if (expired.length) {
+      log('info', '[qq-bridge] solo 状态检查：%s', JSON.stringify(expired))
+    }
+  }, SOLO_CHECK_INTERVAL_MS)
+
   log('info', '[qq-bridge] 已启动，OneBot WS: %s', config.onebotWs)
 
   // ⚠️ 清理必须通过 apply 的返回值（disposer）注册：Cordis 从不 emit 'dispose'
-  // 事件，ctx.on('dispose') 永远不会触发，导致重载时旧实例泄漏（连接累积、
-  // 重复处理消息）。返回清理函数由 fiber 卸载时统一调用。
+  // 事件，ctx.on('dispose') 永远不会触发。此 disposer 由两处调用：
+  //   ① 下一次 apply() 到来时（迭代自动清理，见文件顶 prevRuntime）；
+  //   ② fiber 卸载时（Cordis 兜底）。
+  const runtime = {
+    dispose() {
+      clearInterval(soloCheckInterval)
+      for (const t of cooldownTimers.values()) clearTimeout(t)
+      cooldownTimers.clear()
+      friends.dispose()            // 最终保存友好度 + 清理持久化定时器
+      energy.dispose()
+      bot.close()                  // 关 WS + 从 activeByUrl 注销 + active=false
+    },
+  }
+  prevRuntime = runtime
   return () => {
-    energy.dispose()
-    bot.close()
+    // 仅当自己仍是最新 runtime 才真正释放（防迭代后旧 dispose 误杀新实例）
+    if (prevRuntime === runtime) { prevRuntime = null; runtime.dispose() }
   }
 }

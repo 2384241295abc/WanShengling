@@ -14,6 +14,7 @@
 
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { DEFAULT_ENERGY } from './energy.mjs'
 
 /** 全局默认配置（所有群/私聊继承的基础值） */
 export const DEFAULTS = {
@@ -38,13 +39,8 @@ export const DEFAULTS = {
   workUsers: [],               // 允许使用工作指令的 QQ 用户 id（数字字符串数组）；空=全部允许
 
   // 群聊能量阈值机制（仅群聊生效；私聊不走）
-  energy: {
-    enabled: true,             // 群聊是否启用能量阈值
-    range: [100, 1000],        // 每次回复后重置的随机能量区间(上限1000)
-    decayPerMin: 3,           // 每分钟衰减
-    msgCost: 10,               // 群内每条消息衰减
-    contextWindow: 8,          // 触发时携带的最近消息条数
-  },
+  // ⚠️ 默认值唯一来源为 energy.mjs 的 DEFAULT_ENERGY，此处引用，勿重复维护
+  energy: { ...DEFAULT_ENERGY },
 
   // 按群覆盖配置（key = 群号数字，如 "859762634"）
   groups: {},
@@ -52,16 +48,20 @@ export const DEFAULTS = {
 
 /** 合并环境变量与原始配置，返回最终 config */
 export function resolveConfig(rawConfig = {}) {
+  // range 是数组字段，需独立拷贝，避免各实例共享同一数组引用被互相污染（浅拷贝陷阱）
+  const mergeEnergy = (base, patch = {}) => {
+    const merged = { ...base, ...patch }
+    if (Array.isArray(patch.range)) merged.range = [...patch.range]
+    else if (Array.isArray(base.range)) merged.range = [...base.range]
+    return merged
+  }
   return {
     ...DEFAULTS,
     ...rawConfig,
     onebotWs: process.env.DSH_QQ_ONEBOT_WS || rawConfig.onebotWs || DEFAULTS.onebotWs,
     onebotToken: process.env.DSH_QQ_ONEBOT_TOKEN || rawConfig.onebotToken || DEFAULTS.onebotToken,
-    // energy 深层合并（允许补丁只覆盖部分字段）
-    energy: {
-      ...DEFAULTS.energy,
-      ...(rawConfig.energy || {}),
-    },
+    // energy 深层合并（允许补丁只覆盖部分字段）；range 数组独立拷贝防共享污染
+    energy: mergeEnergy(DEFAULTS.energy, rawConfig.energy),
     groups: rawConfig.groups || DEFAULTS.groups,
     // 工作模式 cwd 默认 ~/Documents/DshDesktop
     workCwd: rawConfig.workCwd || DEFAULTS.workCwd || join(homedir(), 'Documents', 'DshDesktop'),

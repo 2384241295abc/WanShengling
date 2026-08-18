@@ -26,6 +26,18 @@ export class OneBotError extends Error {
   }
 }
 
+/**
+ * 模块级「同一 WS url 单连接」注册表（跨 apply / 热重载实例共享）。
+ *
+ * 🔴 根治历史老 bug（记录 40/50、"多次接收群消息但只发一条回去"）：
+ *   HMR/热重载会反复调用 apply() 创建新 OneBotClient，而 Cordis 不保证调用旧实例
+ *   的 disposer → 旧 WS 连接残留累积（曾积累到 6 条）。每条连接都是一个消息监听
+ *   实例，导致同一条群消息被多个实例重复处理（接收多次、但回复合并/丢序）。
+ *   这里在「新建实例时若同 url 已有活动实例则先关掉旧的」→ 无论 disposer 是否被调，
+ *   进程内始终只有 1 条连到同一 url 的连接 → 每条消息只被一个实例处理。
+ */
+const activeByUrl = new Map()
+
 export class OneBotClient extends EventEmitter {
   /**
    * @param {object} opts
@@ -45,10 +57,18 @@ export class OneBotClient extends EventEmitter {
     this.ws = null
     this.connected = false
     this.closed = false            // 主动关闭
+    this.active = true             // 消息处理开关：close/被新实例替换后置 false，旧实例即使 socket 残留也丢弃消息
     this.reconnectAttempt = 0
     this.pending = new Map()       // echo -> { resolve, reject, timer }
     this.nextEcho = 0
     this._hbTimer = null
+
+    // 🔴 单连接去重：同 url 若已有活动实例，先关掉旧的，保证进程内 1 条 → 防多实例重复处理消息
+    const prev = activeByUrl.get(this.url)
+    if (prev && prev !== this) {
+      try { prev.close() } catch { /* ignore */ }
+    }
+    activeByUrl.set(this.url, this)
   }
 
   connect() {
@@ -111,6 +131,9 @@ export class OneBotClient extends EventEmitter {
   }
 
   _onMessage(raw) {
+    // 🔴 被替换/关闭的旧实例：即使底层 socket 在服务端残留、仍被 push 消息，
+    // 也直接丢弃，绝不再触发 index 的处理 → 根治"同一条群消息被多实例重复处理"
+    if (!this.active) return
     let msg
     try { msg = JSON.parse(raw) } catch { this.emit('raw', raw); return }
     this.emit('raw', msg)
@@ -133,6 +156,8 @@ export class OneBotClient extends EventEmitter {
 
   /** 发起动作，等待 echo 响应。timeoutMs 默认 15s。 */
   request(action, params = {}, timeoutMs = 15000) {
+    // 🔴 已被新实例替换/关闭的旧实例：禁止再发任何动作（否则"老版本抢回复"）
+    if (!this.active) return Promise.reject(new Error(`onebot client inactive (${action})`))
     if (!this.connected || !this.ws || this.ws.readyState !== 1) {
       return Promise.reject(new Error(`onebot not connected (readyState=${this.ws?.readyState})`))
     }
@@ -177,9 +202,12 @@ export class OneBotClient extends EventEmitter {
 
   close() {
     this.closed = true
+    this.active = false          // 停用消息处理（关键：即使 socket 残留也不再处理消息）
     this._stopHeartbeat()
     this._failAllPending(new Error('onebot client closed'))
     if (this.ws) { try { this.ws.close() } catch { /* ignore */ } this.ws = null }
+    // 仅当自己是该 url 的当前实例才注销，避免误删新实例的注册
+    if (activeByUrl.get(this.url) === this) activeByUrl.delete(this.url)
   }
 
   _failAllPending(err) {

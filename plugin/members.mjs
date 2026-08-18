@@ -75,9 +75,9 @@ export function createMembersManager({ log = () => {} } = {}) {
         mem = { userId: id, nickname: '', card: '', title: '', firstSeen: now, lastSeen: now, msgCount: 0, topics: new Map(), traits: [], summary: '' }
         g.set(id, mem)
       }
-      mem.nickname = m.nickname ?? mem.nickname
-      mem.card = m.card ?? mem.card
-      mem.title = m.title ?? mem.title
+      mem.nickname = m.nickname || mem.nickname   // 优先用户昵称；空串也能被真实值覆盖（不只吞 null）
+      mem.card = m.card || mem.card
+      mem.title = m.title || mem.title
       // 合并静态标签（昵称/名片推断）
       for (const t of nameTags(mem.nickname, mem.card)) if (!mem.traits.includes(t)) mem.traits.push(t)
     }
@@ -106,6 +106,14 @@ export function createMembersManager({ log = () => {} } = {}) {
   /** 选称呼：优先 QQ 昵称（nickname），名片仅作补充信息 */
   function displayName(mem) {
     return mem.nickname || mem.card || mem.userId
+  }
+
+  /** 按群取某成员显示名（QQ号已同步时）；未知成员用 QQ 号本身 */
+  function nameOf(qqKey, userId) {
+    const g = groups.get(qqKey)
+    const id = String(userId)
+    const mem = g && g.get(id)
+    return mem ? displayName(mem) : String(userId)
   }
 
   /** 生成某群成员认知文本（注入 prompt） */
@@ -137,5 +145,5 @@ export function createMembersManager({ log = () => {} } = {}) {
     return out
   }
 
-  return { syncGroup, observe, buildContext, stats }
+  return { syncGroup, observe, buildContext, stats, nameOf }
 }

@@ -13,7 +13,7 @@
 
 'use strict'
 
-export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushMs = 30000, log = () => {} } = {}) {
+export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushMs = 30000, log = () => {}, onReply = () => {} } = {}) {
   /** sessionId -> 缓冲队列（连续消息各自成条目，回合结束消费队头） */
   const buffers = new Map()
 
@@ -50,6 +50,8 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
       if (reason && reason !== 'completed') {
         await sendText(buf.qqTarget, `（回合结束：${reason}）`).catch(() => {})
       }
+      // 回灌万生玲刚发的回复（供下一轮上下文自省，避免重复/衔接断裂）
+      onReply({ target: buf.qqTarget, text })
     } else {
       // 长回复进行中：仅在确实超时才提示，避免打扰（自然口吻）
       await sendText(buf.qqTarget, '…内容有点多，我继续说完').catch(() => {})

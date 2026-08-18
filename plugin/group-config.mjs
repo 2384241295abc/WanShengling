@@ -18,6 +18,7 @@ import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { DEFAULT_PERSONA } from './persona.mjs'
+import { DEFAULT_ENERGY } from './energy.mjs'
 
 /** 每群配置的完整字段（全局默认值在此，按群 groups 覆盖） */
 export function defaultGroupConfig(global = {}) {
@@ -28,13 +29,8 @@ export function defaultGroupConfig(global = {}) {
     allowOutside: global.allowOutside ?? false,  // 是否允许读取工作目录外文件
     ack: global.ack ?? false,    // 是否发"已收到"回执（默认 false=去机械回执）
     // 群聊能量阈值机制（仅群聊生效；私聊不走此逻辑）
-    energy: {
-      enabled: global.energy?.enabled ?? true,
-      range: global.energy?.range ?? [100, 1000],
-      decayPerMin: global.energy?.decayPerMin ?? 3,
-      msgCost: global.energy?.msgCost ?? 10,
-      contextWindow: global.energy?.contextWindow ?? 8,
-    },
+    // ⚠️ 默认值唯一来源为 energy.mjs 的 DEFAULT_ENERGY，引用之，勿重复维护
+    energy: { ...DEFAULT_ENERGY },
   }
 }
 

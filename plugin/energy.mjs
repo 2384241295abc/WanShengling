@@ -24,16 +24,19 @@
 
 'use strict'
 
-/** 默认参数（与 config.mjs 的 DEFAULTS.energy 一致，可被覆盖） */
-const DEFAULT_ENERGY = {
+/** 默认能量参数（**唯一事实来源**，config.mjs / group-config.mjs 均引用本常量，勿三处重复维护） */
+export const DEFAULT_ENERGY = {
   enabled: true,
   range: [100, 1000],
   decayPerMin: 3,            // 每分钟能量衰减（原每秒3，改为每分钟3 = 慢60倍）
   msgCost: 10,
   contextWindow: 8,
+  soloReplyEnergy: 10,       // solo 状态每次回复后设置的能量（@ 触发快速陪聊）
+  soloIdleMs: 60000,         // solo 超时：发起人友好度超过该毫秒未上升则退出
+  cooldownMs: 5000,          // 回复冷却：刚回复后这些毫秒内普通消息不触发，积累聊天记录后统一评估
 }
 
-export function createEnergyManager({ energy = {}, log = () => {} } = {}) {
+export function createEnergyManager({ energy = {}, log = () => {}, resolveName = (userId) => userId } = {}) {
   const opts = { ...DEFAULT_ENERGY, ...energy }
   /** qqKey -> { energy, lastTick, history: [{user, text, at}] } */
   const states = new Map()
@@ -117,12 +120,111 @@ export function createEnergyManager({ energy = {}, log = () => {} } = {}) {
     return st.energy < 0
   }
 
-  /** 取某群最近聊天记录（供 prompt 上下文） */
-  function getContext(qqKey) {
+  // ---------- 回复冷却(cooldown)状态机 ----------
+
+  /** 回复完成后调用：进入冷却。锁定能量为 -1(不触发)，开始累计冷却期新消息。 */
+  function beginCooldown(qqKey, cooldownMs) {
+    const now = Date.now()
+    let st = states.get(qqKey)
+    if (!st) { st = { energy: opts.range[0], lastTick: now, history: [] }; states.set(qqKey, st) }
+    st.lastReplyAt = now
+    st.cooldownUntil = now + (cooldownMs >= 0 ? cooldownMs : (opts.cooldownMs ?? 5000))
+    st.pendingSinceReply = 0
+    st.energy = -1           // 锁定：冷却期不触发（@ 除外）
+    log('info', '[qq-bridge] 群 %s 进入回复冷却，cooldownUntil=%d', qqKey, st.cooldownUntil)
+    return st.cooldownUntil
+  }
+
+  /** 该群当前是否处于冷却期（且不是因为 @ 已被打破） */
+  function inCooldown(qqKey) {
+    const st = states.get(qqKey)
+    if (!st || st.cooldownUntil === undefined) return false
+    applyDecay(st)
+    return Date.now() < st.cooldownUntil
+  }
+
+  /**
+   * 冷却期内普通消息调用：只把消息写进 history、累计 pending 计数，不判能量不触发。
+   * 这些消息会作为「冷却期聊天记录」进入回复依据。
+   * @returns {boolean} true 表示进入了冷却缓冲（调用方应 return 不回复）
+   */
+  function feedCooldown(qqKey, user, text) {
+    const now = Date.now()
+    let st = states.get(qqKey)
+    if (!st) { st = { energy: opts.range[0], lastTick: now, history: [] }; states.set(qqKey, st) }
+    st.history.push({ user, text, at: now })
+    const keep = opts.contextWindow
+    if (st.history.length > keep) st.history = st.history.slice(-keep)
+    st.pendingSinceReply = (st.pendingSinceReply || 0) + 1
+    log('info', '[qq-bridge] 群 %s 冷却中缓冲消息 pending=%d', qqKey, st.pendingSinceReply)
+    return true
+  }
+
+  /** 冷却期内被 @ ：@ 可打破冷却，立即强制触发（设能量 -1 并清除冷却锁定） */
+  function breakCooldown(qqKey) {
+    const now = Date.now()
+    let st = states.get(qqKey)
+    if (!st) { st = { energy: opts.range[0], lastTick: now, history: [] }; states.set(qqKey, st) }
+    st.cooldownUntil = now      // 解除锁定（标记已过期）
+    st.energy = -1
+    log('info', '[qq-bridge] 群 %s @打破冷却，强制触发', qqKey)
+    return st.energy
+  }
+
+  /**
+   * 冷却到期（外部定时器/下个消息驱动）调用：解除锁定并恢复能量节奏。
+   * @returns {{expired:boolean, hasPending:boolean, pendingN:int}}
+   *   expired=true 表示本回合刚从冷却解除；hasPending 表示冷却期有新消息（可作为回复依据）
+   */
+  function cooldownExpired(qqKey) {
+    const st = states.get(qqKey)
+    if (!st || st.cooldownUntil === undefined) return { expired: false, hasPending: false, pendingN: 0 }
+    if (Date.now() < st.cooldownUntil) return { expired: false, hasPending: false, pendingN: (st.pendingSinceReply || 0) }
+    const res = { expired: true, hasPending: (st.pendingSinceReply || 0) > 0, pendingN: (st.pendingSinceReply || 0) }
+    st.cooldownUntil = undefined
+    const pending = st.pendingSinceReply || 0
+    st.pendingSinceReply = 0
+    // 恢复能量：按配置随机复位（与 reset 相同的恢复逻辑）
+    const [lo, hi] = opts.range
+    st.energy = lo + Math.floor(Math.random() * (hi - lo + 1))
+    st.lastTick = Date.now()
+    log('info', '[qq-bridge] 群 %s 冷却结束，恢复能量=%d（冷却期缓冲 %d 条）', qqKey, st.energy, pending)
+    return res
+  }
+
+  /** 取某群最近聊天记录（供 prompt 上下文）——发言者经 resolveName 解析为可读昵称；bot 自己标为万生玲
+   *  @param {boolean} [omitLast] 若 true，跳过最新一条（调用方刚经 feed 写入的"当前待回应消息"，
+   *        避免它与 index 单独传入的 user message 重复出现 → 模型不会对错消息/接旧话）。
+   */
+  function getContext(qqKey, omitLast = false) {
     const st = states.get(qqKey)
     if (!st || !st.history.length) return ''
-    const lines = st.history.map((m) => `${m.user}: ${m.text}`).join('\n')
+    let list = st.history
+    if (omitLast) list = list.slice(0, -1)     // 去掉当前这条（正被回应的那句）
+    if (!list.length) return ''
+    const lines = list.map((m) => {
+      const name = m.user === 'self' ? '万生玲' : resolveName(m.user, qqKey)
+      return `${name}: ${m.text}`
+    }).join('\n')
     return `（以下是该群最近的聊天记录，请基于这些内容自然地接话，不要复述记录本身：\n${lines}）`
+  }
+
+  /**
+   * 记录万生玲自己刚发出的一条回复到上下文历史（不扣能量、不影响触发判断）。
+   * 让模型在下一轮能看到自己上一条说了什么，避免重复与衔接断裂。
+   */
+  function recordBotReply(qqKey, text) {
+    const now = Date.now()
+    let st = states.get(qqKey)
+    if (!st) {
+      st = { energy: opts.range[0], lastTick: now, history: [] }
+      states.set(qqKey, st)
+    }
+    if (text) {
+      st.history.push({ user: 'self', text, at: now })
+      const keep = opts.contextWindow
+      if (st.history.length > keep) st.history = st.history.slice(-keep)
+    }
   }
 
   /** 当前能量值（供可视化/调试） */
@@ -142,5 +244,5 @@ export function createEnergyManager({ energy = {}, log = () => {} } = {}) {
     states.clear()
   }
 
-  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose }
+  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, recordBotReply, beginCooldown, inCooldown, feedCooldown, breakCooldown, cooldownExpired }
 }
