@@ -289,6 +289,11 @@ export function apply(ctx, rawConfig = {}) {
   }
 
   async function onQqMessage(msg) {
+    // 🔇 禁言开关：muted=true 时完全不触发任何回复（含群聊/@/私聊/识图/工作指令），仅记日志，便于调试
+    if (config.muted) {
+      log('info', '[qq-bridge] 禁言中，忽略消息: %s', (OneBotClient.extractText(msg.message) || '（无文字）').slice(0, 40))
+      return
+    }
     let text = OneBotClient.extractText(msg.message)   // let：solo 纯图分支会改写为占位文本
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
     const isAt = selfId ? isAtBot(msg.message, selfId) : false

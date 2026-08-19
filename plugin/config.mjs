@@ -26,6 +26,7 @@ export const DEFAULTS = {
   forceFlushMs: 30000,
   autoAnswer: 'reject',        // 'reject' | 'allow-once'
   maxChunkLength: 3500,
+  muted: false,                // 🔇 禁言开关：true 时完全不触发任何回复（含群聊/@/私聊/识图），便于调试
 
   // 全局人设 / 风格（所有群继承；groups 可覆盖）
   persona: undefined,          // undefined = 使用内置 DEFAULT_PERSONA
