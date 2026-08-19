@@ -36,6 +36,7 @@ import { appendChat, memoryInstruction, chatLine } from './memory.mjs'
 import { createFeatureRegistry } from './registry.mjs'
 import { createVisionFeature } from './features/vision.mjs'
 import { createCommandsFeature } from './features/commands.mjs'
+import { createSubjectivity } from './subjectivity.mjs'
 
 export const name = 'qq-bridge'
 export const inject = ['apiProxy']
@@ -122,6 +123,10 @@ export function apply(ctx, rawConfig = {}) {
   features.register(visionFeature)
   features.register(createCommandsFeature({ bot, groups, members, friends, config, log }))
 
+  // 消息对象主体性规则（基础回复规则，独立于人设）：回复前核查对象主体，推测不出先询问；
+  // 询问后 15s 内收到回应 → 追加对象主体明确的回复
+  const subjectivity = createSubjectivity({ log })
+
   const reply = createReplyBuffer({
     sendText: (target, text) => bot.sendText(target, text),
     maxChunkLength: config.maxChunkLength,
@@ -132,6 +137,8 @@ export function apply(ctx, rawConfig = {}) {
       if (config.energy?.enabled && target?.message_type === 'group' && target.group_id && text) {
         const gk = qqSessionId('group', target.group_id)
         energy.recordBotReply(gk, text)
+        // 主体性规则：本回复若以问号结尾（对象询问）→ 开 15s 追问窗口
+        subjectivity.onBotReply(gk, text)
         // 文件记忆：机器人回复写入该群 chatlog.md
         if (config.memoryEnabled) {
           const wd = groups.get(gk)?.workdir
@@ -267,6 +274,8 @@ export function apply(ctx, rawConfig = {}) {
     if (persona) content.push({ type: 'text', text: persona })
     const dctx = discussion.getContext(qqKey)
     if (dctx) content.push({ type: 'text', text: dctx })
+    // 主体性规则块：冷却后自动回复同样要判断对象主体（与 onQqMessage 路径一致）
+    content.push({ type: 'text', text: subjectivity.ruleText() })
     if (config.memoryEnabled) {
       content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
     } else {
@@ -368,13 +377,19 @@ export function apply(ctx, rawConfig = {}) {
 
     // 群聊能量机制：先记录+扣能量，未达阈值则不回复（像真人不是每条都回）
     let fedCurrentMsg = false   // 本次回复是否经 feed（非@）触发 → 当前消息已在 history，上下文须 omitLast
+    // 主体性追问窗口命中：上一条回复是对象询问（问号结尾），15s 内收到回应 → 追加对象主体明确的回复
+    let askFollowUp = false
     if (isGroup && gcfg.energy?.enabled) {
       // 讨论模式退出检查（能量 < -24）
       discussion.checkExit(qqKey)
+      // 主体性追问窗口：先消费窗口（命中=这条消息是上一条询问的澄清回应）
+      askFollowUp = subjectivity.consume(qqKey)
 
       // 🔒 回复冷却：刚回复后 cdMs 内，普通消息只缓冲不触发；@ 带文字可打破冷却
       if (energy.inCooldown(qqKey)) {
-        if (isAt && text) {
+        if (askFollowUp) {
+          energy.breakCooldown(qqKey)   // 追问澄清值得打破冷却（与 @ 带文字同级）
+        } else if (isAt && text) {
           energy.breakCooldown(qqKey)   // @ 带文字打破冷却（真问题值得打断）
         } else if (isAt) {
           return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数 —— 彻底消除"问+紧跟裸@"二次回复
@@ -388,7 +403,12 @@ export function apply(ctx, rawConfig = {}) {
       // 被 @ 时强制触发（点名就得回）并进入 solo（记录发起人），否则正常 feed；
       // solo 纯图（soloImageTrigger）出冷却即触发"看图后主动回复"（不越过冷却——冷却期已在上面缓冲）
       // 🔒 solo 期间普通消息也强制触发（活跃群积极回应，不受能量阈值限制——能量高时普通消息 <0 才回会"假死"）
-      if (isAt) {
+      if (askFollowUp) {
+        // 主体性追问：对象主体已澄清，追加对象主体明确的回复（force 不受能量阈值限制）
+        energy.force(qqKey)
+        energy.record(qqKey, String(msg.user_id ?? '?'), text)
+        fedCurrentMsg = true
+      } else if (isAt) {
         friends.enterSolo(qqKey, String(msg.user_id ?? '?'))
         energy.force(qqKey)
       } else if (soloImageTrigger || friends.isSolo(qqKey)) {
@@ -467,6 +487,10 @@ export function apply(ctx, rawConfig = {}) {
         // 讨论环境提示：让机器人发言更符合"多人讨论"氛围
         const dctx = discussion.getContext(qqKey)
         if (dctx) content.push({ type: 'text', text: dctx })
+        // 主体性规则块：回复前先判断对象主体（基础回复规则，独立于人设）
+        content.push({ type: 'text', text: subjectivity.ruleText() })
+        // 追问窗口命中：本次是对象澄清的追加回复
+        if (askFollowUp) content.push({ type: 'text', text: subjectivity.followUpHint() })
       } else {
         // 私聊：保持友好度认知（无文件记忆）
         const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
@@ -629,6 +653,7 @@ export function apply(ctx, rawConfig = {}) {
       cooldownTimers.clear()
       msgQueues.clear()            // 串行队列：dispose 后不再入队新消息
       friends.dispose()            // 最终保存友好度 + 清理持久化定时器
+      subjectivity.clear()         // 清理主体性追问窗口
       energy.dispose()
       bot.close()                  // 关 WS + 从 activeByUrl 注销 + active=false
     },
