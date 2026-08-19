@@ -146,6 +146,7 @@ export function apply(ctx, rawConfig = {}) {
     api: ctx.apiProxy,
     sendText: (target, text) => bot.sendText(target, text),
     autoAnswer: config.autoAnswer,
+    workAutoAnswer: config.workAutoAnswer,
     log,
   })
   const discussion = createDiscussionManager({ energy, log })
@@ -306,10 +307,19 @@ export function apply(ctx, rawConfig = {}) {
       group_id: msg.group_id,
       user_id: msg.user_id,
     }
+    const isGroup = msg.message_type === 'group'
     const qqKey = qqSessionId(msg.message_type, msg.group_id ?? msg.user_id)
+    // 🔄 挂起回答：若该会话有挂起的提问/审批，用户消息直接作为回答提交（不进入正常处理）
+    // 适用工作模式(ask)或全局 ask 策略；仅当确实有 pending 时拦截。
+    // 注意键有两个来源：普通会话用 qqKey，工作模式(!)用 qq-work-${user_id}，需分别探测。
+    if (handlers.hasPending?.(qqKey) || (!isGroup && handlers.hasPending?.(`qq-work-${msg.user_id ?? '?'}`))) {
+      const pendKey = handlers.hasPending(qqKey) ? qqKey : `qq-work-${msg.user_id ?? '?'}`
+      log('info', '[qq-bridge] 收到用户回答(挂起模式, %s): %s', pendKey, text.slice(0, 40))
+      const consumed = await handlers.onUserReply(pendKey, text)
+      if (consumed) return
+    }
     // 按群配置：人设/风格/工作目录/目录外权限
     const gcfg = groups.get(qqKey)
-    const isGroup = msg.message_type === 'group'
     // 工作指令白名单：空=全部允许；非空=仅列表内用户可用（其他用户只聊天，禁文件访问）
     const allowWork = !config.workUsers?.length || config.workUsers.includes(String(msg.user_id ?? ''))
 

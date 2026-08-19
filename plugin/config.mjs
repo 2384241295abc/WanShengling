@@ -24,7 +24,8 @@ export const DEFAULTS = {
   ack: false,                  // 默认去机械回执
   stallNoticeMs: 60000,
   forceFlushMs: 30000,
-  autoAnswer: 'reject',        // 'reject' | 'allow-once'
+  autoAnswer: 'reject',        // 'reject' | 'allow-once' —— 普通会话的提问/审批策略
+  workAutoAnswer: 'ask',       // 工作模式(qq-work-*)的提问/审批策略：'ask'=挂起等用户在 QQ 回复
   maxChunkLength: 3500,
   muted: false,                // 🔇 禁言开关：true 时完全不触发任何回复（含群聊/@/私聊/识图），便于调试
 
