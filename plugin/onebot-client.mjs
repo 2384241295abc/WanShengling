@@ -189,6 +189,33 @@ export class OneBotClient extends EventEmitter {
     return data.message_id
   }
 
+  /** 便捷：发送一张本地图片（NapCat 等支持本地路径；message 用分段数组）。 */
+  async sendImage(target, filePath) {
+    const { message_type, group_id, user_id } = target
+    const action = message_type === 'group' ? 'send_group_msg' : 'send_private_msg'
+    const params = { message: [{ type: 'image', data: { file: filePath } }] }
+    if (message_type === 'group') params.group_id = group_id
+    if (user_id !== undefined) params.user_id = user_id
+    const data = await this.request(action, params)
+    return data.message_id
+  }
+
+  /** 便捷：同时发文字+一张图片（message 为 [text, image] 分段数组，一条消息）。 */
+  async sendTextAndImage(target, text, filePath) {
+    const { message_type, group_id, user_id } = target
+    const action = message_type === 'group' ? 'send_group_msg' : 'send_private_msg'
+    const params = {
+      message: [
+        { type: 'text', data: { text } },
+        { type: 'image', data: { file: filePath } },
+      ],
+    }
+    if (message_type === 'group') params.group_id = group_id
+    if (user_id !== undefined) params.user_id = user_id
+    const data = await this.request(action, params)
+    return data.message_id
+  }
+
   /** 解析消息中的纯文本（拼接所有 text 段）。 */
   static extractText(message) {
     if (typeof message === 'string') return message

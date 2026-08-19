@@ -61,6 +61,12 @@ export const DEFAULTS = {
   // ⚠️ 默认值唯一来源为 discussion.mjs 的 DEFAULT_DISCUSSION，此处引用，勿重复维护
   discussion: { ...DEFAULT_DISCUSSION },
 
+  // 万生玲主动发图（表情包）能力（send-image.mjs 使用；改这里补丁覆盖即热更新）
+  sendImage: {
+    assetDir: '',    // 表情包库目录；空=禁用发图（默认关闭，配置后启用）
+    hint: `你可以在回复里用 [发图:xxx] 标记甩一张图（xxx 是表情包库里的文件名关键字，如 [发图:猫猫]）。像真人聊着聊着甩个表情包：能用图表达就不必打字。拿不准或没必要发图时不要用。`, // prompt 提示（人设语境，非硬约束）
+  },
+
   // 按群覆盖配置（key = 群号数字，如 "859762634"）
   groups: {},
 
@@ -94,9 +100,10 @@ export function resolveConfig(rawConfig = {}) {
     onebotToken: process.env.DSH_QQ_ONEBOT_TOKEN || rawConfig.onebotToken || DEFAULTS.onebotToken,
     // energy 深层合并（允许补丁只覆盖部分字段）；range 数组独立拷贝防共享污染
     energy: mergeEnergy(DEFAULTS.energy, rawConfig.energy),
-    // subjectivity / discussion 深层合并（允许补丁只覆盖部分字段）
+    // subjectivity / discussion / sendImage 深层合并（允许补丁只覆盖部分字段）
     subjectivity: mergeBlock(DEFAULTS.subjectivity, rawConfig.subjectivity),
     discussion: mergeBlock(DEFAULTS.discussion, rawConfig.discussion),
+    sendImage: mergeBlock(DEFAULTS.sendImage, rawConfig.sendImage),
     groups: rawConfig.groups || DEFAULTS.groups,
     // 工作模式 cwd 默认 ~/Documents/DshDesktop
     workCwd: rawConfig.workCwd || DEFAULTS.workCwd || join(homedir(), 'Documents', 'DshDesktop'),

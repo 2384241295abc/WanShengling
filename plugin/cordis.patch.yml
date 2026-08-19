@@ -46,6 +46,11 @@
           # exitEnergy: -24
           # activityWindowMs: 120000
 
+        # 万生玲主动发图（表情包）：assetDir 配置表情包库目录即启用（文件名即关键字）
+        # 模型在回复里写 [发图:关键字] 标记，发送时自动替换为图片消息
+        sendImage:
+          assetDir: '/Users/you/Documents/qqbot/assets'   # 空=禁用发图
+
         # 按群覆盖（key = 群号数字）
         groups:
           '123456789':

@@ -37,6 +37,7 @@ import { createFeatureRegistry } from './registry.mjs'
 import { createVisionFeature } from './features/vision.mjs'
 import { createCommandsFeature } from './features/commands.mjs'
 import { createSubjectivity } from './subjectivity.mjs'
+import { createSendImage, parseImageMark } from './send-image.mjs'
 
 export const name = 'qq-bridge'
 export const inject = ['apiProxy']
@@ -133,8 +134,42 @@ export function apply(ctx, rawConfig = {}) {
     followUpHint: config.subjectivity?.followUpHint,
   })
 
+  // 万生玲主动发图（表情包）：模型回复带 [发图:xxx] 标记 → 发送前解析并从本地库发图
+  const sendImage = createSendImage({
+    assetDir: config.sendImage?.assetDir || '',
+    log,
+  })
+
   const reply = createReplyBuffer({
-    sendText: (target, text) => bot.sendText(target, text),
+    // 发送钩子：解析 [发图:xxx] 标记 → 改发图片；**始终返回清理后的文本**（回灌用，不含标记）
+    // 注：bot.sendText/sendImage 的返回是 message_id（数字），此处不作为回灌文本。
+    sendText: async (target, text) => {
+      // 发图功能未配置（assetDir 空）→ 原样发文本
+      if (!sendImage.assetDir()) {
+        await bot.sendText(target, text).catch(() => {})
+        return text
+      }
+      const mark = parseImageMark(text)
+      if (!mark) {
+        await bot.sendText(target, text).catch(() => {})
+        return text
+      }
+      // 有标记：先匹配表情包库
+      const imgPath = await sendImage.resolveAsset(mark.keyword).catch(() => null)
+      if (!imgPath) {
+        // 库中无此图：发文字但去掉无效标记（避免暴露 [发图:] 语法）
+        const clean = mark.text || text
+        await bot.sendText(target, clean).catch(() => {})
+        return clean
+      }
+      // 发图：有前置文字 → 图文一条；只有标记 → 只发图
+      if (mark.text) {
+        await bot.sendTextAndImage(target, mark.text, imgPath).catch(() => bot.sendText(target, mark.text))
+      } else {
+        await bot.sendImage(target, imgPath).catch(() => {})
+      }
+      return mark.text   // 回灌用清理后文本（不含标记）
+    },
     maxChunkLength: config.maxChunkLength,
     forceFlushMs: config.forceFlushMs,
     log,
@@ -510,6 +545,10 @@ export function apply(ctx, rawConfig = {}) {
         content.push({ type: 'text', text: subjectivity.ruleText() })
         // 追问窗口命中：本次是对象澄清的追加回复
         if (askFollowUp) content.push({ type: 'text', text: subjectivity.followUpHint() })
+        // 发图能力提示：配置了表情包库才注入（人设语境，非硬约束）
+        if (config.sendImage?.assetDir && config.sendImage?.hint) {
+          content.push({ type: 'text', text: config.sendImage.hint })
+        }
       } else {
         // 私聊：保持友好度认知（无文件记忆）
         const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))

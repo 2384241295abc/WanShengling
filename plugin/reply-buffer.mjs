@@ -43,15 +43,21 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
   async function flush(buf, done, reason) {
     const text = sanitize(buf.steps.join('\n\n').trim() || buf.chunks.join('').trim())
     if (!text) return
+    // 实际发出的文本：sendText 可能对文本做转换（如解析 [发图:xxx] 标记并改发图片），
+    // 以 sendText 返回值（清理后的文本）为准回灌，避免标记残留进聊天记录
+    let sentText = text
     if (done) {
       for (let i = 0; i < text.length; i += maxChunkLength) {
-        await sendText(buf.qqTarget, text.slice(i, i + maxChunkLength)).catch(() => {})
+        // 接受 sendText 返回的清理后文本（可为空串——纯发图时无文字回灌）；
+        // 仅当返回 null（发送失败）时保留原文本
+        const r = await sendText(buf.qqTarget, text.slice(i, i + maxChunkLength)).catch(() => null)
+        if (typeof r === 'string') sentText = r
       }
       if (reason && reason !== 'completed') {
         await sendText(buf.qqTarget, `（回合结束：${reason}）`).catch(() => {})
       }
       // 回灌机器人刚发的回复（供下一轮上下文自省，避免重复/衔接断裂）
-      onReply({ target: buf.qqTarget, text })
+      onReply({ target: buf.qqTarget, text: sentText })
     } else {
       // 长回复进行中：只在第一次超时提示一次（hinted 标志防重复），避免刷屏垃圾
       if (!buf.hinted) {
