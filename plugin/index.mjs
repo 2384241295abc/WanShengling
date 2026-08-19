@@ -138,7 +138,8 @@ export function apply(ctx, rawConfig = {}) {
         const gk = qqSessionId('group', target.group_id)
         energy.recordBotReply(gk, text)
         // 主体性规则：本回复若以问号结尾（对象询问）→ 开 15s 追问窗口
-        subjectivity.onBotReply(gk, text)
+        // （守卫与能量闸 consume 对齐：群能量启用才开窗，避免窗口开了无人消费）
+        if (groups.get(gk)?.energy?.enabled) subjectivity.onBotReply(gk, text)
         // 文件记忆：机器人回复写入该群 chatlog.md
         if (config.memoryEnabled) {
           const wd = groups.get(gk)?.workdir

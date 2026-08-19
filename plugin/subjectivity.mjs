@@ -48,9 +48,10 @@ export function createSubjectivity({ log = () => {} } = {}) {
     return FOLLOW_UP_HINT
   }
 
-  /** 机器人回复后调用：询问句（问号结尾）→ 开 15s 追问窗口 */
+  /** 机器人回复后调用：仅群聊（qq-group- 前缀）询问句（问号结尾）→ 开 15s 追问窗口。
+   *  私聊天然主体明确（对方就是对象），不开窗。 */
   function onBotReply(qqKey, text) {
-    if (!qqKey || !isAskText(text)) return
+    if (!qqKey || !qqKey.startsWith('qq-group-') || !isAskText(text)) return
     windows.set(qqKey, Date.now() + ASK_WINDOW_MS)
     log('info', '[qq-bridge] 已开对象追问窗口 %s（15s）', qqKey)
   }
