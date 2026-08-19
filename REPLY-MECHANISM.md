@@ -85,6 +85,9 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(msg)
 > ① 讨论模式能量节奏：原 `cooldownExpired` 到期一律恢复常态 [500,1500]，覆盖了讨论的 30~60 重置 →
 > 讨论中 bot 近乎沉默、能量永远达不到 -24 退出阈值（讨论模式退不出去）。现到期时若该群讨论中，追加
 > `discussion.onReply` 按 [30,60] 恢复（非讨论群 no-op）。
+> ③ 讨论模式完整冷却（v0.3.3）：冷却到期的自动回复（replyFromCooldown）后若该群讨论中，
+> 重新 startCooldown——否则 30~60 能量触发快 + 自动回复不重置冷却 → 讨论中 bot 每 ~15s 连回、
+> 没有 cd 感。现讨论中每 cdMs 至多回一条（冷却期消息照常缓冲、@ 可打破）。
 > ② 打破冷却竞态：`breakCooldown` 原先不作废旧定时器，break 临近到期时旧定时器会把冷却期 pending
 > 误当新消息再触发一次 `replyFromCooldown` → 双回复。现 break 前先 `clearCooldownTimer`，且定时器
 > 回调经 `enqueueMsg` 进入 per-群串行队列。

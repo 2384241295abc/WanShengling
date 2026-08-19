@@ -305,6 +305,9 @@ export function apply(ctx, rawConfig = {}) {
     const target = { message_type: 'group', group_id: Number(groupId), user_id: 0 }
     await promptQueue(sessionId, content, target, '冷却后自动回复')
     friends.markReply(qqKey, selfId)
+    // 🔒 讨论模式：冷却到期的自动回复也重新进入冷却——否则 30~60 能量触发快 + 自动回复不重置冷却，
+    //    讨论中 bot 每 ~15s 连回一条、"没有 cd"感。重新冷却后每 cdMs 至多回一条（冷却期消息照常缓冲、@ 可打破）。
+    if (discussion.isActive(qqKey)) startCooldown(qqKey, groupId)
   }
 
   async function onQqMessage(msg) {
