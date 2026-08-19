@@ -1,12 +1,13 @@
 {
   "name": "@dsh-qq/qq-bridge",
-  "version": "0.2.0",
-  "description": "DeepSeek Harness × QQ (OneBot 11) 远程交互桥 —— 独立 Cordis 插件包（人设/能量/友好度/讨论/成员认知）",
+  "version": "0.3.0",
+  "description": "DeepSeek Harness × QQ (OneBot 11) 远程交互桥 —— 插件宿主(registry)+ 识图/指令 feature,群聊文件记忆(chatlog+profiles),能量/冷却/solo/讨论节奏",
   "type": "module",
   "main": "index.mjs",
   "private": true,
   "files": [
     "*.mjs",
+    "features",
     "cordis.patch.yml"
   ],
   "keywords": [
