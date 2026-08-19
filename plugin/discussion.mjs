@@ -91,7 +91,7 @@ export function createDiscussionManager({ energy, log = () => {}, params = {} } 
   /** 讨论环境提示（仅讨论中注入；退出后不再注入=自然恢复常态） */
   function getContext(qqKey) {
     if (!active.has(qqKey)) return ''
-    return `（当前群正在热烈讨论中，多人参与、气氛活跃。你说话要自然融入讨论，可以简短接话、吐槽、附和或反问，别显得突兀，也别一个人长篇大论。）`
+    return `（当前群人多、聊得热闹。插得上话就自然说一句，插不上或没叫到你就不接，别硬融、别抢话；尤其别人约局组队这类，没被邀请就不表态。）`
   }
 
   /**
