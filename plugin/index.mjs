@@ -368,12 +368,12 @@ export function apply(ctx, rawConfig = {}) {
             members.syncGroup(qqKey, data)
             memberCounts.set(qqKey, data.length)
             friends.setGroupMembers(qqKey, data.map((m) => m.user_id))
-            // 讨论触发：友好度总和 > 成员数×80，或 2 分钟内发言人数 > 5
+            // 讨论触发：友好度总和 > 成员数×80，或 2 分钟内发言人数 > 9
             discussion.checkEnter(qqKey, friends.groupTotalAll(qqKey), data.length, discussion.recentSpeakers(qqKey))
           }
         }).catch(() => {})
       } else {
-        // 已同步过：每次消息也检查活跃触发（2分钟内>5人）
+        // 已同步过：每次消息也检查活跃触发（2分钟内>9人）
         discussion.checkEnter(qqKey, friends.groupTotalAll(qqKey), memberCounts.get(qqKey) || 0, discussion.recentSpeakers(qqKey))
       }
       // @ 机器人的用户友好度 +5（无论是否触发回复）

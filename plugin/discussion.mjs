@@ -3,7 +3,7 @@
  *
  * 触发条件（任一满足即进入，每次消息后检查）：
  *   A. 某群成员友好度总和 > 成员数量 × 80
- *   B. 最近 2 分钟内发言人数 > 5
+ *   B. 最近 2 分钟内发言人数 > 9
  *
  * 讨论模式行为：
  *   - 进入时能量固定为 10
@@ -33,8 +33,8 @@ export const REPLY_RESET_ENERGY_RANGE = [30, 60]
 export const EXIT_ENERGY = -24
 /** 讨论触发：最近发言窗口（毫秒） */
 export const ACTIVITY_WINDOW_MS = 2 * 60 * 1000
-/** 讨论触发：窗口内发言人数阈值 */
-export const ACTIVITY_SPEAKER_THRESHOLD = 5
+/** 讨论触发：窗口内发言人数阈值（2026-08-19 由 5 改为 9） */
+export const ACTIVITY_SPEAKER_THRESHOLD = 9
 
 export function createDiscussionManager({ energy, log = () => {} } = {}) {
   /** qqKey -> 是否讨论中 */
@@ -113,7 +113,7 @@ export function createDiscussionManager({ energy, log = () => {} } = {}) {
 
   /**
    * 检查是否应进入讨论。
-   * 条件 A：群总友好度 > 成员数 × 80；或条件 B：2 分钟内发言人数 > 5。
+   * 条件 A：群总友好度 > 成员数 × 80；或条件 B：2 分钟内发言人数 > 9。
    * @returns true=本次进入讨论
    */
   function checkEnter(qqKey, groupTotal, memberCount, recentSpeakers) {
