@@ -102,8 +102,19 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(msg)
 
 ### 讨论模式（discussion.mjs）
 
-- **进入**：群友好度总和 > 成员数×80，或 2 分钟内发言人数 > 5。
+- **进入**：群友好度总和 > 成员数×80，或 2 分钟内发言人数 > 9（2026-08-19 由 5 改 9）。
 - **节奏**：进入能量=10；每次回复后能量重置 `[30,60]` 并进入冷却（防高频回复）；冷却到期恢复仍按 `[30,60]`（讨论节奏，2026-08-19 修复）；能量 < -24 退出。
+- ⚠️ 以上全部阈值已配置化（`config.discussion`：`triggerMultiplier`/`enterEnergy`/`replyResetRange`/`exitEnergy`/`activityWindowMs`/`speakerThreshold`），补丁 `discussion` 段可覆盖 → HMR 热更新，无需重启。
+
+### 消息对象主体性规则（subjectivity.mjs，2026-08-19 新增）
+
+- **目的**：万生玲把群里所有消息都当成"对自己说的"，回复时以自己为核心。
+- **规则**（注入群聊 prompt，`config.subjectivity.ruleText` 可覆盖）：
+  - 对象主体是自己 → 正常回复；
+  - 对象主体是别人（约游戏组队/约排位/互聊）→ 不硬接不凑合，自然冒个泡（随口一句不参与）；
+  - 推测不出 → 先回一句符合人设的询问（如"你是在跟我说？"），别硬接。
+- **追问窗口**：万生玲回复以问号结尾（对象询问）→ 开 `askWindowMs`（默认 15s）窗口；窗口内收到回应 → 打破冷却 force 追加一次对象主体明确的回复（一次性）。
+- ⚠️ 参数已配置化（`config.subjectivity`：`askWindowMs`/`ruleText`/`followUpHint`），补丁 `subjectivity` 段可覆盖 → HMR 热更新，无需重启。
 
 ## 4. 回复后节奏（index.mjs 回复成功路径）
 

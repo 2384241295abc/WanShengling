@@ -41,9 +41,6 @@ import { createSubjectivity } from './subjectivity.mjs'
 export const name = 'qq-bridge'
 export const inject = ['apiProxy']
 
-/** 回复冷却默认时长（毫秒；energy.cooldownMs 覆盖） */
-const DEFAULT_COOLDOWN_MS = 15000
-
 /**
  * 模块级「上一个 runtime」引用（进程内唯一，跨 HMR/apply 共享）。
  * 🔴 迭代自动清理：每次新的 apply() 到来时，主动 dispose 上一个 runtime
@@ -118,7 +115,8 @@ export function apply(ctx, rawConfig = {}) {
   // 好友度/档案管理（先于插件注册，features 需要它；顺序即依赖顺序）
   const friends = createFriendsManager({ log, soloIdleMs: config.energy?.soloIdleMs })
   // 讨论模式（只依赖 energy；提前到插件注册之前——commands 指令需要查询 discussion 状态）
-  const discussion = createDiscussionManager({ energy, log })
+  // 参数单一来源：config.discussion（补丁可覆盖 → 热更新无需重启）
+  const discussion = createDiscussionManager({ energy, log, params: config.discussion })
   // 插件宿主：注册中心 + 内置插件（识图/指令），后续功能可继续在此 register
   const features = createFeatureRegistry()
   const visionFeature = createVisionFeature({ bot, config, groups, energy, friends, members, sessions, log })
@@ -126,8 +124,14 @@ export function apply(ctx, rawConfig = {}) {
   features.register(createCommandsFeature({ bot, groups, members, friends, energy, discussion, config, log }))
 
   // 消息对象主体性规则（基础回复规则，独立于人设）：回复前核查对象主体，推测不出先询问；
-  // 询问后 15s 内收到回应 → 追加对象主体明确的回复
-  const subjectivity = createSubjectivity({ log })
+  // 询问后 askWindowMs 内收到回应 → 追加对象主体明确的回复。
+  // 参数单一来源：config.subjectivity（规则文本/窗口时长可补丁覆盖 → 热更新无需重启）
+  const subjectivity = createSubjectivity({
+    log,
+    askWindowMs: config.subjectivity?.askWindowMs,
+    ruleText: config.subjectivity?.ruleText,
+    followUpHint: config.subjectivity?.followUpHint,
+  })
 
   const reply = createReplyBuffer({
     sendText: (target, text) => bot.sendText(target, text),
@@ -220,7 +224,8 @@ export function apply(ctx, rawConfig = {}) {
 
   /** 进入冷却并安排到期回调：冷却期有积累的新消息时，到期后主动触发一次回复（依据=冷却期聊天记录） */
   function startCooldown(qqKey, groupId) {
-    const cdMs = config.energy?.cooldownMs ?? DEFAULT_COOLDOWN_MS
+    // 冷却时长单一来源：config.energy.cooldownMs（DEFAULT_ENERGY 提供默认值）
+    const cdMs = config.energy?.cooldownMs ?? 15000
     energy.beginCooldown(qqKey, cdMs)
     clearCooldownTimer(qqKey)
     const timer = setTimeout(() => {

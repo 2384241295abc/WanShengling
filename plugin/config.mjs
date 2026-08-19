@@ -15,6 +15,7 @@
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { DEFAULT_ENERGY } from './energy.mjs'
+import { DEFAULT_DISCUSSION } from './discussion.mjs'
 
 /** 全局默认配置（所有群/私聊继承的基础值） */
 export const DEFAULTS = {
@@ -45,6 +46,21 @@ export const DEFAULTS = {
   // ⚠️ 默认值唯一来源为 energy.mjs 的 DEFAULT_ENERGY，此处引用，勿重复维护
   energy: { ...DEFAULT_ENERGY },
 
+  // 消息对象主体性规则（subjectivity.mjs 使用；改这里补丁覆盖即热更新，无需重启）
+  subjectivity: {
+    askWindowMs: 15000,      // 询问后追问窗口时长（毫秒）
+    ruleText: `【回复前先看对象】
+- 回复前先判断：这句话是说给谁的？从最近的聊天记录能清晰推测出对象主体吗？
+- 对象主体是你 → 正常回复。
+- 对象主体是别人（比如在约游戏组队、约排位、互相讨论）→ 别硬接、别凑合，像真人刷群看到别人聊天那样自然冒个泡（随口一句不参与，比如"你们玩，我不凑热闹"），别硬把话题接过来。
+- 推测不出 → 先回一句符合你人设的询问（比如"你是在跟我说？"），别硬接。`,
+    followUpHint: `（对方刚刚回应了你刚才的询问。判断这条消息的对象主体是否已明确：明确了就给出对象主体明确的回复；还没明确就自然接一句。）`,
+  },
+
+  // 群聊讨论模式参数（discussion.mjs 使用；改这里补丁覆盖即热更新，无需重启）
+  // ⚠️ 默认值唯一来源为 discussion.mjs 的 DEFAULT_DISCUSSION，此处引用，勿重复维护
+  discussion: { ...DEFAULT_DISCUSSION },
+
   // 按群覆盖配置（key = 群号数字，如 "859762634"）
   groups: {},
 
@@ -63,6 +79,14 @@ export function resolveConfig(rawConfig = {}) {
     else if (Array.isArray(base.range)) merged.range = [...base.range]
     return merged
   }
+  // 普通对象块深层合并（subjectivity/discussion）：补丁可只覆盖部分字段，数组字段独立拷贝
+  const mergeBlock = (base, patch = {}) => {
+    const merged = { ...base, ...patch }
+    for (const k of Object.keys(merged)) {
+      if (Array.isArray(merged[k]) && !Array.isArray(patch[k])) merged[k] = [...merged[k]]
+    }
+    return merged
+  }
   return {
     ...DEFAULTS,
     ...rawConfig,
@@ -70,6 +94,9 @@ export function resolveConfig(rawConfig = {}) {
     onebotToken: process.env.DSH_QQ_ONEBOT_TOKEN || rawConfig.onebotToken || DEFAULTS.onebotToken,
     // energy 深层合并（允许补丁只覆盖部分字段）；range 数组独立拷贝防共享污染
     energy: mergeEnergy(DEFAULTS.energy, rawConfig.energy),
+    // subjectivity / discussion 深层合并（允许补丁只覆盖部分字段）
+    subjectivity: mergeBlock(DEFAULTS.subjectivity, rawConfig.subjectivity),
+    discussion: mergeBlock(DEFAULTS.discussion, rawConfig.discussion),
     groups: rawConfig.groups || DEFAULTS.groups,
     // 工作模式 cwd 默认 ~/Documents/DshDesktop
     workCwd: rawConfig.workCwd || DEFAULTS.workCwd || join(homedir(), 'Documents', 'DshDesktop'),

@@ -33,6 +33,19 @@
           range: [500, 1500]     # 回复后能量随机恢复区间
           # cooldownMs: 15000    # 回复冷却毫秒
 
+        # 消息对象主体性规则参数（规则文本/追问窗口可在此覆盖）
+        subjectivity:
+          askWindowMs: 15000     # 询问后追问窗口时长(ms)
+          # ruleText: |-         # 自定义规则文本（默认见 config.mjs）
+
+        # 群聊讨论模式参数（改这里热更新生效）
+        discussion:
+          speakerThreshold: 9    # 2 分钟内发言人数 > 阈值才进入讨论
+          # triggerMultiplier: 80
+          # replyResetRange: [30, 60]
+          # exitEnergy: -24
+          # activityWindowMs: 120000
+
         # 按群覆盖（key = 群号数字）
         groups:
           '123456789':
