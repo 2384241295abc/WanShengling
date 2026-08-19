@@ -40,7 +40,7 @@ export const DEFAULTS = {
   // 私聊工作指令：以 workPrefix 开头 → 真实 DSH 代理（不注入人设）
   workPrefix: '!',             // 前缀（如 "!查看 DshDesktop 目录"）
   workCwd: '',                 // 工作模式 cwd（空=默认 ~/Documents/DshDesktop）
-  workUsers: [],               // 允许使用工作指令的 QQ 用户 id（数字字符串数组）；空=全部允许
+  workUsers: [],               // 工作模式白名单（数字字符串数组）；空=工作模式关闭(默认)，非空=仅列表内用户可用
 
   // 群聊能量阈值机制（仅群聊生效；私聊不走）
   // ⚠️ 默认值唯一来源为 energy.mjs 的 DEFAULT_ENERGY，此处引用，勿重复维护

@@ -382,8 +382,8 @@ export function apply(ctx, rawConfig = {}) {
     }
     // 按群配置：人设/风格/工作目录/目录外权限
     const gcfg = groups.get(qqKey)
-    // 工作指令白名单：空=全部允许；非空=仅列表内用户可用（其他用户只聊天，禁文件访问）
-    const allowWork = !config.workUsers?.length || config.workUsers.includes(String(msg.user_id ?? ''))
+    // 工作指令白名单：空=工作模式关闭(默认)；非空=仅列表内用户可用
+    const allowWork = !!config.workUsers?.length && config.workUsers.includes(String(msg.user_id ?? ''))
 
     // 插件消息钩子（指令/纯图等）：任一插件返回 true 即拦截
     const ctx = { msg, text, isAt, imageSegs, hasImage, target, qqKey, gcfg, isGroup, allowWork,

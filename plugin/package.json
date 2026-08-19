@@ -1,6 +1,6 @@
 {
   "name": "@dsh-qq/qq-bridge",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "DeepSeek Harness × QQ (OneBot 11) 远程交互桥 —— 插件宿主(registry)+ 识图/指令 feature,群聊文件记忆(chatlog+profiles),能量/冷却/solo/讨论节奏",
   "type": "module",
   "main": "index.mjs",
