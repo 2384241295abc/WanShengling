@@ -509,7 +509,14 @@ export function apply(ctx, rawConfig = {}) {
       const pluginBlocks = await features.runOnPrompt({ sessionId, qqKey, gcfg, imageSegs, pendingImagePaths, text })
       content.push(...pluginBlocks)
       // 用户消息放最后（模型注意力集中在用户的话上；纯 @ 消息给默认文本）
-      content.push({ type: 'text', text: text || '（对方@了你）' })
+      // 主体标注：群聊时标明"谁说的、是否@了你"——模型据此判断对象主体，而非把所有消息当对自己的
+      if (isGroup) {
+        const speaker = members.nameOf(qqKey, String(msg.user_id ?? '?'))
+        const atMark = isAt ? '（他@了你）' : '（未@你，不一定是跟你说的）'
+        content.push({ type: 'text', text: `[${speaker} 说：${text || '（无文字）'}]${atMark}` })
+      } else {
+        content.push({ type: 'text', text: text || '（对方@了你）' })
+      }
 
       // 异步入队（accepted 即返回；回复走事件流）
       await promptQueue(sessionId, content, target, text || '（对方@了你）')
