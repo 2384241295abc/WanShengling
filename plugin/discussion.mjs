@@ -94,11 +94,21 @@ export function createDiscussionManager({ energy, log = () => {}, params = {} } 
     return `（当前群正在热烈讨论中，多人参与、气氛活跃。你说话要自然融入讨论，可以简短接话、吐槽、附和或反问，别显得突兀，也别一个人长篇大论。）`
   }
 
-  /** 消息后检查：能量 < exitEnergy → 退出讨论并重置能量为常态随机值 */
-  function checkExit(qqKey) {
+  /**
+   * 消息后/周期检查：退出讨论并重置能量为常态随机值。
+   * 退出条件（任一）：
+   *   - 能量 < exitEnergy（-24）：讨论节奏长期回复后能量仍持续走低；
+   *   - 活跃度回落：recentSpeakers <= speakerThreshold（2 分钟窗口内发言人数已降到阈值以下）→
+   *     讨论散了，自然退出（与进入条件对称："人散则退"）。
+   * 传入 recentSpeakers=null/undefined 时只做能量判定（调用方无法提供时）。
+   */
+  function checkExit(qqKey, recentSpeakers) {
     if (!active.has(qqKey)) return false
     const e = energy.getEnergy(qqKey)
-    if (e !== undefined && e < p.exitEnergy) {
+    const energyLow = e !== undefined && e < p.exitEnergy
+    const crowdGone = recentSpeakers !== undefined && recentSpeakers !== null && recentSpeakers <= p.speakerThreshold
+    if (energyLow || crowdGone) {
+      log('info', '[qq-bridge] 群 %s 退出讨论（能量=%s，活跃度=%s）', qqKey, energyLow, crowdGone ? recentSpeakers : '活跃')
       exit(qqKey)
       energy.reset(qqKey)
       return true

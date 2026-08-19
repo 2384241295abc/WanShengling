@@ -432,8 +432,8 @@ export function apply(ctx, rawConfig = {}) {
     // 主体性追问窗口命中：上一条回复是对象询问（问号结尾），15s 内收到回应 → 追加对象主体明确的回复
     let askFollowUp = false
     if (isGroup && gcfg.energy?.enabled) {
-      // 讨论模式退出检查（能量 < -24）
-      discussion.checkExit(qqKey)
+      // 讨论模式退出检查（能量 < -24，或 2 分钟发言人数降到阈值以下=讨论散了）
+      discussion.checkExit(qqKey, discussion.recentSpeakers(qqKey))
       // 主体性追问窗口：先消费窗口（命中=这条消息是上一条询问的澄清回应）
       askFollowUp = subjectivity.consume(qqKey)
 
@@ -677,6 +677,12 @@ export function apply(ctx, rawConfig = {}) {
     const expired = friends.checkSolosExpiry()
     if (expired.length) {
       log('info', '[qq-bridge] solo 状态检查：%s', JSON.stringify(expired))
+    }
+    // 讨论模式超时退出：群冷场时没有消息触发 checkExit，靠周期检查兜底
+    // （活跃度已降到阈值以下 = 讨论散了 → 退出，见 discussion.checkExit）
+    const dStats = discussion.stats?.()
+    for (const gqk of dStats?.activeGroups || []) {
+      discussion.checkExit(gqk, discussion.recentSpeakers(gqk))
     }
   }, SOLO_CHECK_INTERVAL_MS)
 
