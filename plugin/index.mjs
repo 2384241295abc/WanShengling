@@ -311,9 +311,10 @@ export function apply(ctx, rawConfig = {}) {
     const qqKey = qqSessionId(msg.message_type, msg.group_id ?? msg.user_id)
     // 🔄 挂起回答：若该会话有挂起的提问/审批，用户消息直接作为回答提交（不进入正常处理）
     // 适用工作模式(ask)或全局 ask 策略；仅当确实有 pending 时拦截。
-    // 注意键有两个来源：普通会话用 qqKey，工作模式(!)用 qq-work-${user_id}，需分别探测。
-    if (handlers.hasPending?.(qqKey) || (!isGroup && handlers.hasPending?.(`qq-work-${msg.user_id ?? '?'}`))) {
-      const pendKey = handlers.hasPending(qqKey) ? qqKey : `qq-work-${msg.user_id ?? '?'}`
+    // 键有两个来源：普通会话用 qqKey，工作模式(!)用 qq-work-${user_id}；findPendingKey 兼容退化 id。
+    let pendKey = handlers.findPendingKey?.(qqKey)
+    if (!pendKey && !isGroup) pendKey = handlers.findPendingKey?.(`qq-work-${msg.user_id ?? '?'}`)
+    if (pendKey) {
       log('info', '[qq-bridge] 收到用户回答(挂起模式, %s): %s', pendKey, text.slice(0, 40))
       const consumed = await handlers.onUserReply(pendKey, text)
       if (consumed) return
@@ -524,15 +525,40 @@ export function apply(ctx, rawConfig = {}) {
     if (!bot.active) return
     // 插件会话钩子（识图识别结果/清理等）
     await features.runOnSessionEvent(sessionId, event)
-    // 为 question/approval 注入当前条目目标（活跃缓冲）
-    const buf = reply.activeBuffer?.(sessionId)
-    if ((event.type === 'question/requested' || event.type === 'approval/requested') && buf) {
-      event.data = { ...event.data, qqTarget: buf.qqTarget }
-    }
-    if (event.type === 'question/requested') return handlers.onQuestion(sessionId, event.data)
-    if (event.type === 'approval/requested') return handlers.onApproval(sessionId, event.data)
+    // ⚠️ question/approval 是 mux 帧，不经 session/event 到达（见 onMuxFrame）；
+    //    此处只处理流式回复事件。
     return reply.onEvent(sessionId, event)
   }
+
+  // ---------- mux 流：question/approval 帧 ----------
+  // question/requested、approval/requested 由 api-proxy 广播到 events.mux 流
+  //（不 emit 成 session/event），本桥订阅 mux 拿到帧并转交 handlers 应答。
+  const muxAbort = new AbortController()
+  const muxLoop = (async () => {
+    try {
+      for await (const env of ctx.apiProxy.events.mux({ rpcId: randomUUID(), payload: {} }, muxAbort.signal)) {
+        const payload = env.payload
+        if (!bot.active) continue
+        if (payload.type === 'question/requested' || payload.type === 'approval/requested') {
+          // 只处理本桥创建的会话（qq- 前缀），不抢答 Web 端会话的提问/审批
+          const sid = String(payload.sessionId ?? '')
+          if (!sid.startsWith('qq-')) continue
+          // 注入当前条目目标（活跃缓冲），handlers 需要它把提示/结果发回 QQ
+          const buf = reply.activeBuffer?.(sid)
+          const data = buf ? { ...payload, qqTarget: buf.qqTarget } : payload
+          try {
+            if (payload.type === 'question/requested') await handlers.onQuestion(sid, env.rpcId, data)
+            else await handlers.onApproval(sid, env.rpcId, data)
+          } catch (err) {
+            log('warn', '[qq-bridge] mux 帧处理失败: %s', err.message)
+          }
+        }
+      }
+    } catch (err) {
+      // 正常 abort 不算错（dispose 时主动关闭）
+      if (!muxAbort.signal.aborted) log('warn', '[qq-bridge] mux 流异常: %s', err.message)
+    }
+  })()
 
   // ---------- 接线 ----------
 
@@ -597,6 +623,7 @@ export function apply(ctx, rawConfig = {}) {
       clearInterval(soloCheckInterval)
       clearInterval(profileUpdateTimer)
       clearInterval(statusTimer)
+      muxAbort.abort()               // 关闭 mux 订阅（question/approval 帧流）
       writeStatus()                  // 最终落盘一次状态
       for (const t of cooldownTimers.values()) clearTimeout(t)
       cooldownTimers.clear()
