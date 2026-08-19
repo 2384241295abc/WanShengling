@@ -41,7 +41,7 @@ export const name = 'qq-bridge'
 export const inject = ['apiProxy']
 
 /** 回复冷却默认时长（毫秒；energy.cooldownMs 覆盖） */
-const DEFAULT_COOLDOWN_MS = 5000
+const DEFAULT_COOLDOWN_MS = 15000
 
 /**
  * 模块级「上一个 runtime」引用（进程内唯一，跨 HMR/apply 共享）。

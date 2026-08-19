@@ -32,7 +32,7 @@ export const DEFAULT_ENERGY = {
   msgCost: 10,
   contextWindow: 8,
   soloIdleMs: 60000,         // solo 超时：发起人友好度超过该毫秒未上升则退出（solo 仅记录状态，节奏统一走冷却）
-  cooldownMs: 5000,          // 回复冷却：刚回复后这些毫秒内普通消息不触发，积累聊天记录后统一评估
+  cooldownMs: 15000,         // 回复冷却：刚回复后这些毫秒内普通消息不触发，积累聊天记录后统一评估（用户要求 15s）
 }
 
 export function createEnergyManager({ energy = {}, log = () => {}, resolveName = (userId) => userId, botName = '我' } = {}) {
@@ -129,7 +129,7 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     let st = states.get(qqKey)
     if (!st) { st = { energy: opts.range[0], lastTick: now, history: [] }; states.set(qqKey, st) }
     st.lastReplyAt = now
-    st.cooldownUntil = now + (cooldownMs >= 0 ? cooldownMs : (opts.cooldownMs ?? 5000))
+    st.cooldownUntil = now + (cooldownMs >= 0 ? cooldownMs : (opts.cooldownMs ?? 15000))
     st.pendingSinceReply = 0
     st.energy = -1           // 锁定：冷却期不触发（@ 除外）
     log('info', '[qq-bridge] 群 %s 进入回复冷却，cooldownUntil=%d', qqKey, st.cooldownUntil)
