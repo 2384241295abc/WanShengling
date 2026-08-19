@@ -1,6 +1,6 @@
 # dsh-qq-bridge
 
-DeepSeek Harness × QQ 远程交互桥（OneBot 11）—— 独立 Cordis 插件包（v0.3.0）。
+DeepSeek Harness × QQ 远程交互桥（OneBot 11）—— 独立 Cordis 插件包（v0.3.1）。
 
 让 DeepSeek Harness 的智能体通过 QQ 聊天「活」起来：可定制人设、群聊文件记忆、
 识图、社交节奏（不是每条都回）、讨论模式、用户友好度与档案。
