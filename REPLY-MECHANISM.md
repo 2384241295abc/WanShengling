@@ -45,18 +45,18 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(msg)
 
 ## 3. 能量闸（群聊，energy.mjs）
 
-**核心思想**：像真人一样不是每条都回。回复后能量随机恢复 `[100,1000]`，随时间衰减，
+**核心思想**：像真人一样不是每条都回。回复后能量随机恢复 `[500,1500]`，随时间衰减，
 每条消息扣能量，**能量 < 0 才触发回复**；@ 则强制。
 
 ### 数值（DEFAULT_ENERGY，补丁可覆盖）
 
 | 配置 | 默认 | 含义 |
 |------|------|------|
-| `range` | `[100,1000]` | 回复/冷却结束后能量随机恢复区间 |
+| `range` | `[500,1500]` | 回复/冷却结束后能量随机恢复区间（常规状态） |
 | `decayPerMin` | `3` | 每分钟衰减（惰性：按距上次更新分钟数补算） |
 | `msgCost` | `10` | 每条普通消息扣能（挚友 17） |
 | `contextWindow` | `8` | 触发时携带的最近聊天记录条数 |
-| `cooldownMs` | `5000` | 回复后冷却时长 |
+| `cooldownMs` | `15000` | 回复后冷却时长 |
 
 ### 三种触发方式
 
@@ -69,16 +69,25 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(msg)
 ### 回复冷却（核心节奏）
 
 ```
-回复发出 → beginCooldown(5s)：能量锁 -1，pendingSinceReply=0
+回复发出 → beginCooldown(15s)：能量锁 -1，pendingSinceReply=0
   冷却期内：
-    - @ 带文字 → breakCooldown（解除锁定+能量-1）→ 立即回复
+    - @ 带文字 / 主体性追问澄清 → breakCooldown（解除锁定+能量-1，并作废旧定时器）→ 立即回复
     - 裸 @（无文字）→ 完全忽略（不缓冲不计数，防"问+裸@"回两句）
     - 普通消息 → feedCooldown 缓冲入历史，pending+1
-  冷却到期（5s 定时器）→ cooldownExpired：
-    - 能量恢复 random[100,1000]
-    - pending>0 → replyFromCooldown 基于缓冲记录回一条（"刚刚有人说话了，自然接一句"）
+  冷却到期（15s 定时器）→ cooldownExpired：
+    - 能量恢复：讨论中 → [30,60]（讨论节奏）；否则 → random[500,1500]（常态）
+    - pending>0 → replyFromCooldown 基于缓冲记录回一条（"刚刚有人说话了，自然接一句"），
+      回调走 per-群串行队列（与消息触发互斥，防双回复）
     - pending=0 → 静默
 ```
+
+> **CD 修复记录（2026-08-19）**：
+> ① 讨论模式能量节奏：原 `cooldownExpired` 到期一律恢复常态 [500,1500]，覆盖了讨论的 30~60 重置 →
+> 讨论中 bot 近乎沉默、能量永远达不到 -24 退出阈值（讨论模式退不出去）。现到期时若该群讨论中，追加
+> `discussion.onReply` 按 [30,60] 恢复（非讨论群 no-op）。
+> ② 打破冷却竞态：`breakCooldown` 原先不作废旧定时器，break 临近到期时旧定时器会把冷却期 pending
+> 误当新消息再触发一次 `replyFromCooldown` → 双回复。现 break 前先 `clearCooldownTimer`，且定时器
+> 回调经 `enqueueMsg` 进入 per-群串行队列。
 
 ### solo 状态（@ 触发，纯状态记录）
 
@@ -91,15 +100,14 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(msg)
 ### 讨论模式（discussion.mjs）
 
 - **进入**：群友好度总和 > 成员数×80，或 2 分钟内发言人数 > 5。
-- **节奏**：进入能量=10；每次回复后能量重置 `[30,60]`；能量 < -24 退出。
-- **效果**：更活跃的多人讨论节奏（不走 5s 冷却）。
+- **节奏**：进入能量=10；每次回复后能量重置 `[30,60]` 并进入冷却（防高频回复）；冷却到期恢复仍按 `[30,60]`（讨论节奏，2026-08-19 修复）；能量 < -24 退出。
 
 ## 4. 回复后节奏（index.mjs 回复成功路径）
 
 ```
 if (isGroup && energy.enabled) {
-  if (discussion.isActive) → discussion.onReply(能量重置30~60)
-  else                     → startCooldown(5s)          // 含 solo，统一冷却
+  if (discussion.isActive) → discussion.onReply(能量重置30~60) + startCooldown(15s)
+  else                     → startCooldown(15s)          // 含 solo，统一冷却
 }
 if (isGroup) → friends.markReply(设置结算点)
 else         → 私聊回复后对方友好度 +1
@@ -141,8 +149,8 @@ QQ 内命令：`/友好度` 或 `/友好度 <群号>`（指令统一 `/` 前缀�
 
 | 配置 | 默认 | 说明 |
 |------|------|------|
-| `energy.range` | `[100,1000]` | 能量恢复区间 |
-| `energy.cooldownMs` | `5000` | 回复冷却（热更新可调） |
+| `energy.range` | `[500,1500]` | 能量恢复区间 |
+| `energy.cooldownMs` | `15000` | 回复冷却（热更新可调） |
 | `energy.soloIdleMs` | `60000` | solo 状态超时 |
 | `workUsers` | `[]` | 工作指令白名单（空=全部允许） |
 | `workCwd` | `~/Documents/DshDesktop` | 工作模式目录 |

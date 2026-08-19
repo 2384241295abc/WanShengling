@@ -17,8 +17,8 @@ DeepSeek Harness × QQ 远程交互桥（OneBot 11）—— 独立 Cordis 插件
 | **人设** | `config.persona` 补丁热更新；`botName` 机器人显示名；`DEFAULT_PERSONA` 模板留空自行填写 |
 | **群聊文件记忆** | 每群 `chatlog.md`(聊天记录独立存储) + `profiles.md`(每用户档案统一文档)；prompt 改为「固定人设+读文件指令」，模型读文件获得上下文；每周 agent 静默更新档案 |
 | **识图(可选依赖)** | QQ 表情包/图片：平时纯图只记录不回复，solo 模式看图后主动回复；识别结果入库 chatlog、图片文件用完即删；识别失败按疑似色情内容处理。需 DSH 视觉插件(modlens/free-vision)提供 `image_understand` 工具 |
-| **能量节奏** | 群聊不是每条都回：回复后能量随机 `[100,1000]`，每分钟衰减 3，每条消息扣 10(挚友 17)，`能量<0` 才回；@ 必回 |
-| **回复冷却** | 回复后 5s 冷却：冷却内普通消息只缓冲，@ 带文字可打破；冷却到期恢复能量并补回一条 |
+| **能量节奏** | 群聊不是每条都回：回复后能量随机 `[500,1500]`，每分钟衰减 3，每条消息扣 10(挚友 17)，`能量<0` 才回；@ 必回 |
+| **回复冷却** | 回复后 15s 冷却：冷却内普通消息只缓冲，@ 带文字可打破；冷却到期恢复能量并补回一条 |
 | **友好度** | 跨群共享，按用户维度：机器人发言前后各 5 条内成员 +1，被 @ +5；等级 陌生/认识/熟悉/挚友；持久化到 `~/.dsh/qq-bridge-friendly.json` |
 | **成员认知** | 自动识别 QQ 昵称(优先)/群名片(兜底)，从聊天记录推断话题画像 |
 | **solo 点名** | 群内 @ → 进入 solo(纯状态记录，节奏统一走冷却)，发起人该群友好度 60s 未上升自动退出 |
@@ -71,7 +71,7 @@ ln -s <本仓库>/plugin ~/.dsh/profiles/node_modules/@dsh-qq/qq-bridge
           你叫 XX，……（身份/性格/说话风格/回复规则）
         workUsers: ['<你的QQ号>']       # 工作指令白名单；空=全部允许
         energy:
-          range: [100, 1000]
+          range: [500, 1500]
         groups:
           '<群号>':
             replyStyle: 'casual'
@@ -103,10 +103,10 @@ ln -s <本仓库>/plugin ~/.dsh/profiles/node_modules/@dsh-qq/qq-bridge
 | `memoryEnabled` | `true` | 群聊文件记忆（chatlog.md + profiles.md，prompt 改为读文件） |
 | `clearCommand` | `清除缓存` | `/清除缓存` 命令词（白名单可执行） |
 | `profileWeekMs` | 7 天 | 用户档案每周自动更新间隔 |
-| `energy.range` | `[100, 1000]` | 回复后重置能量区间 |
+| `energy.range` | `[500, 1500]` | 回复后重置能量区间 |
 | `energy.decayPerMin` | `3` | 每分钟能量衰减 |
 | `energy.msgCost` | `10` | 每条消息扣能（挚友 17） |
-| `energy.cooldownMs` | `5000` | 回复冷却毫秒 |
+| `energy.cooldownMs` | `15000` | 回复冷却毫秒 |
 | `energy.soloIdleMs` | `60000` | solo 状态超时 |
 | `groups.<群号>` | — | 按群覆盖（persona/replyStyle/workdir/allowOutside/ack） |
 

@@ -226,9 +226,16 @@ export function apply(ctx, rawConfig = {}) {
       cooldownTimers.delete(qqKey)
       // 到期：解除锁定、恢复能量；若有冷却期积累消息 → 主动回一条
       const res = energy.cooldownExpired(qqKey)
-      if (res?.expired && res?.hasPending && config.energy?.enabled) {
-        void replyFromCooldown(qqKey, String(groupId)).catch((err) =>
-          log('warn', '[qq-bridge] 冷却后自动回复失败: %s', err?.message))
+      if (res?.expired && config.energy?.enabled) {
+        // 🔒 讨论模式能量节奏：cooldownExpired 恢复的是常态区间(500-1500)，会盖掉讨论的 30~60 重置，
+        //    导致讨论中 bot 近乎沉默、且能量永远达不到 -24 退出阈值 → 讨论模式退不出去。
+        //    讨论中到期 → 按讨论节奏恢复 30~60（onReply 幂等：非讨论群 no-op）。
+        if (discussion.isActive(qqKey)) discussion.onReply(qqKey)
+        if (res?.hasPending) {
+          // 定时器回调也走 per-群串行队列：与消息触发的回复互斥，杜绝同群双 prompt/双回复
+          void enqueueMsg(`g${groupId}`, () => replyFromCooldown(qqKey, String(groupId))).catch((err) =>
+            log('warn', '[qq-bridge] 冷却后自动回复失败: %s', err?.message))
+        }
       }
     }, cdMs)
     cooldownTimers.set(qqKey, timer)
@@ -389,8 +396,10 @@ export function apply(ctx, rawConfig = {}) {
       // 🔒 回复冷却：刚回复后 cdMs 内，普通消息只缓冲不触发；@ 带文字可打破冷却
       if (energy.inCooldown(qqKey)) {
         if (askFollowUp) {
+          clearCooldownTimer(qqKey)   // 先清旧定时器：防其到期把冷却期 pending 误当新消息再触发一次
           energy.breakCooldown(qqKey)   // 追问澄清值得打破冷却（与 @ 带文字同级）
         } else if (isAt && text) {
+          clearCooldownTimer(qqKey)   // 同上：打破冷却必须作废旧定时器，否则可能双回复
           energy.breakCooldown(qqKey)   // @ 带文字打破冷却（真问题值得打断）
         } else if (isAt) {
           return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数 —— 彻底消除"问+紧跟裸@"二次回复
