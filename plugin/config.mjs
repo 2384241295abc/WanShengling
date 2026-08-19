@@ -41,6 +41,7 @@ export const DEFAULTS = {
   workPrefix: '!',             // 前缀（如 "!查看 DshDesktop 目录"）
   workCwd: '',                 // 工作模式 cwd（空=默认 ~/Documents/DshDesktop）
   workUsers: [],               // 工作模式白名单（数字字符串数组）；空=工作模式关闭(默认)，非空=仅列表内用户可用
+  allowSelfMessages: false,    // 代理号给自己发消息触发工作指令（需 NapCat 开启推送自身消息）；默认关
 
   // 群聊能量阈值机制（仅群聊生效；私聊不走）
   // ⚠️ 默认值唯一来源为 energy.mjs 的 DEFAULT_ENERGY，此处引用，勿重复维护

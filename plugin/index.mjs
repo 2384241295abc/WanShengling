@@ -356,6 +356,29 @@ export function apply(ctx, rawConfig = {}) {
       log('info', '[qq-bridge] 禁言中，忽略消息: %s', (OneBotClient.extractText(msg.message) || '（无文字）').slice(0, 40))
       return
     }
+    // 自身消息（代理号给自己发消息触发远程指令）：仅当 allowSelfMessages 开启，
+    // 且按工作指令处理（可触发 DSH 代理），但绝不回复给自己（防循环）。
+    const isSelf = selfId && String(msg.user_id) === String(selfId)
+    if (isSelf) {
+      if (!config.allowSelfMessages) return   // 默认关
+      const text0 = OneBotClient.extractText(msg.message) || ''
+      const wp0 = [config.workPrefix, config.workPrefix === '!' ? '！' : ''].filter(Boolean)
+        .find((p) => text0.startsWith(p))
+      if (!wp0) return   // 非工作指令的自消息忽略（防循环）
+      // 自消息工作指令：处理但不回给自己（结果写日志/会话，不 sendText）
+      const workText = text0.slice(wp0.length).trim()
+      if (!workText) return
+      const workQqKey = `qq-work-${msg.user_id ?? '?'}`
+      const workCwd = config.workCwd || process.cwd()
+      const sessionId = await sessions.ensure(workQqKey, workCwd)
+      const content = [
+        { type: 'text', text: workText },
+        { type: 'text', text: `（自消息工作指令，工作目录 ${workCwd}）` },
+      ]
+      log('info', '[qq-bridge] 自消息工作指令(不回发): %s', workText.slice(0, 60))
+      await promptQueue(sessionId, content, null, workText, { silent: true })   // silent：不回 QQ，防循环
+      return
+    }
     let text = OneBotClient.extractText(msg.message)   // let：solo 纯图分支会改写为占位文本
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
     const isAt = selfId ? isAtBot(msg.message, selfId) : false
