@@ -475,9 +475,10 @@ export function apply(ctx, rawConfig = {}) {
       // 群聊：回复已入队，重置能量（开始下一轮衰减）+ 进入回复冷却
       if (isGroup && gcfg.energy?.enabled) {
         if (discussion.isActive(qqKey)) {
-          // 讨论模式：每次回复后能量重置 30~60
+          // 讨论模式：重置能量 30~60,且同样进入冷却(统一节奏——否则 30~60 能量 3~6 条消息就再触发,回复过频)
           discussion.onReply(qqKey)
-          log('info', '[qq-bridge] 群 %s 讨论中回复，能量已重置', qqKey)
+          startCooldown(qqKey, msg.group_id)
+          log('info', '[qq-bridge] 群 %s 讨论中回复，能量已重置并进入冷却', qqKey)
         } else {
           // 🔒 统一节奏（含 solo）：回复后进入冷却(锁 -1/缓冲消息/到期自动评估)，能量在到期后按配置恢复
           startCooldown(qqKey, msg.group_id)

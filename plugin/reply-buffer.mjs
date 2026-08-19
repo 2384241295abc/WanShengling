@@ -27,7 +27,7 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
   /** 入队：连续消息各自一个缓冲条目，回复按序回传（不会被后到的消息覆盖） */
   function enqueue(sessionId, qqTarget) {
     const list = buffers.get(sessionId) || []
-    list.push({ sessionId, qqTarget, steps: [], chunks: [], lastFlush: Date.now(), done: false })
+    list.push({ sessionId, qqTarget, steps: [], chunks: [], lastFlush: Date.now(), done: false, hinted: false })
     buffers.set(sessionId, list)
     return list.length
   }
@@ -53,8 +53,11 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
       // 回灌机器人刚发的回复（供下一轮上下文自省，避免重复/衔接断裂）
       onReply({ target: buf.qqTarget, text })
     } else {
-      // 长回复进行中：仅在确实超时才提示，避免打扰（自然口吻）
-      await sendText(buf.qqTarget, '…内容有点多，我继续说完').catch(() => {})
+      // 长回复进行中：只在第一次超时提示一次（hinted 标志防重复），避免刷屏垃圾
+      if (!buf.hinted) {
+        buf.hinted = true
+        await sendText(buf.qqTarget, '…内容有点多，我继续说完').catch(() => {})
+      }
     }
     buf.lastFlush = Date.now()
   }
