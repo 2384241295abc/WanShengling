@@ -27,7 +27,7 @@
 /** 默认能量参数（**唯一事实来源**，config.mjs / group-config.mjs 均引用本常量，勿三处重复维护） */
 export const DEFAULT_ENERGY = {
   enabled: true,
-  range: [100, 1000],
+  range: [500, 1500],          // 回复后能量随机恢复区间（常规状态 500-1500，2026-08-19 由 100-1000 调高）
   decayPerMin: 3,            // 每分钟能量衰减（原每秒3，改为每分钟3 = 慢60倍）
   msgCost: 10,
   contextWindow: 8,

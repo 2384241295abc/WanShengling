@@ -52,6 +52,11 @@ export function normalizeGroup(raw, qqKey, global = {}) {
   // energy 深层合并（允许补丁只覆盖部分字段）
   if (raw?.energy || global.energy) {
     merged.energy = { ...base.energy, ...(global.energy || {}), ...(raw?.energy || {}) }
+    // ⚠️ range 是数组字段：上面展开是浅拷贝，各群会共享同一数组引用 → 一处改动污染其它群与全局。
+    //    与 config.mjs mergeEnergy 同款修复：显式拷贝，杜绝共享污染。
+    if (Array.isArray(raw?.energy?.range)) merged.energy.range = [...raw.energy.range]
+    else if (Array.isArray(global.energy?.range)) merged.energy.range = [...global.energy.range]
+    else if (Array.isArray(base.energy.range)) merged.energy.range = [...base.energy.range]
   }
   return merged
 }
