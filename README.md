@@ -1,6 +1,7 @@
 # dsh-qq-bridge
 
 DeepSeek Harness × QQ 远程交互桥（OneBot 11）—— 独立 Cordis 插件包。
+可通过对话远程操控你的dsh处理工作，通过在说话前加！以进入工作模式
 
 让 DeepSeek Harness 的智能体通过 QQ 聊天「活」起来：有人设、会记住群成员、
 有社交节奏（不是每条都回）、能进入群聊「讨论」模式。
