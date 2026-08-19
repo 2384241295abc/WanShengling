@@ -144,6 +144,14 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     return Date.now() < st.cooldownUntil
   }
 
+  /** 冷却剩余毫秒（0 = 不在冷却；供 /能量 指令展示） */
+  function cooldownRemainingMs(qqKey) {
+    const st = states.get(qqKey)
+    if (!st || st.cooldownUntil === undefined) return 0
+    const r = st.cooldownUntil - Date.now()
+    return r > 0 ? r : 0
+  }
+
   /**
    * 冷却期内普通消息调用：只把消息写进 history、累计 pending 计数，不判能量不触发。
    * 这些消息会作为「冷却期聊天记录」进入回复依据。
@@ -265,5 +273,5 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     states.clear()
   }
 
-  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, feedCooldown, breakCooldown, cooldownExpired, pendingImageHint }
+  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, cooldownRemainingMs, feedCooldown, breakCooldown, cooldownExpired, pendingImageHint }
 }

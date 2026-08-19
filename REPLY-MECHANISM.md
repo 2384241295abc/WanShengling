@@ -143,7 +143,7 @@ else         → 私聊回复后对方友好度 +1
 | `~/.dsh/qq-bridge-energy.json` | 各群 `energy/cooldown/solo/discussion/historyLen` | 每 30s 落盘 + 退出时最终落盘 |
 | `~/.dsh/qq-bridge-friendly.json` | 全员友好度（按 QQ 号） | 友好度变化后防抖 10s 保存 |
 
-QQ 内命令：`/友好度` 或 `/友好度 <群号>`（指令统一 `/` 前缀）→ 查群内全员友好度（白名单内可用）。
+QQ 内命令：`/友好度` 或 `/友好度 <群号>`（查群内全员友好度）、`/能量` 或 `/能量 <群号>`（查能量/冷却剩余/讨论/solo/缓冲，维护用）、`/清除缓存`（清全部群一周前聊天记录）——指令统一 `/` 前缀，均白名单内可用。
 
 ## 8. 关键配置速查（补丁 cordis.patch.yml）
 
@@ -172,6 +172,7 @@ QQ 内命令：`/友好度` 或 `/友好度 <群号>`（指令统一 `/` 前缀�
 - **prompt 模式**：`memoryEnabled=true` 时群聊 prompt 只发「固定人设 + 读文件指令」，模型用工具读取 chatlog.md/profiles.md，不再注入滚动上下文（省 token、上下文更完整）；`false` 回退旧注入模式。
 - **清除缓存**：指令需 `/` 前缀——白名单用户(23012321)发 `/清除缓存` → 清除**全部群** chatlog.md 中一周前的记录；其他用户/无前缀均不触发。
 - **友好度**：`/友好度` 或 `/友好度 <群号>`（指令统一 `/` 前缀）
+- **能量**：`/能量` 或 `/能量 <群号>`（v0.3.2 新增，维护用）——读内存直接展示该群能量/冷却剩余秒/讨论/solo/历史缓冲，不走 DSH 代理
 - 安全约束：非白名单用户只允许读取 chatlog.md/profiles.md 与提示中图片路径，禁止写/执行。
 
 
@@ -182,5 +183,5 @@ QQ 内命令：`/友好度` 或 `/友好度 <群号>`（指令统一 `/` 前缀�
   - `onPrompt(ctx)` 返回追加的内容块（识图提示等）
 - **内置插件**（`features/`）：
   - `features/vision.mjs` —— 识图插件（纯图策略/视觉工具提示/识别结果入库/文件清理）
-  - `features/commands.mjs` —— 指令插件（`/友好度`、`/清除缓存`）
+  - `features/commands.mjs` —— 指令插件（`/友好度`、`/能量`、`/清除缓存`）
 - **接入新能力**：在 `index.mjs` 里 `features.register(createXxxFeature(deps))` 即可；deps 提供 bot/config/groups/energy/friends/members/sessions/log 等宿主能力。

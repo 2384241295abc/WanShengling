@@ -117,11 +117,13 @@ export function apply(ctx, rawConfig = {}) {
   })
   // 好友度/档案管理（先于插件注册，features 需要它；顺序即依赖顺序）
   const friends = createFriendsManager({ log, soloIdleMs: config.energy?.soloIdleMs })
+  // 讨论模式（只依赖 energy；提前到插件注册之前——commands 指令需要查询 discussion 状态）
+  const discussion = createDiscussionManager({ energy, log })
   // 插件宿主：注册中心 + 内置插件（识图/指令），后续功能可继续在此 register
   const features = createFeatureRegistry()
   const visionFeature = createVisionFeature({ bot, config, groups, energy, friends, members, sessions, log })
   features.register(visionFeature)
-  features.register(createCommandsFeature({ bot, groups, members, friends, config, log }))
+  features.register(createCommandsFeature({ bot, groups, members, friends, energy, discussion, config, log }))
 
   // 消息对象主体性规则（基础回复规则，独立于人设）：回复前核查对象主体，推测不出先询问；
   // 询问后 15s 内收到回应 → 追加对象主体明确的回复
@@ -157,7 +159,6 @@ export function apply(ctx, rawConfig = {}) {
     workAutoAnswer: config.workAutoAnswer,
     log,
   })
-  const discussion = createDiscussionManager({ energy, log })
   // ---------- QQ → DSH ----------
 
   /** 机器人自身 QQ 号（从 OneBot meta_event 获取，用于 @ 检测） */

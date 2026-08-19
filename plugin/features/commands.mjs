@@ -10,7 +10,7 @@
 import { clearChatOlderThanWeek } from '../memory.mjs'
 
 export function createCommandsFeature(deps) {
-  const { bot, groups, members, friends, config, log } = deps
+  const { bot, groups, members, friends, energy, discussion, config, log } = deps
 
   /** /友好度 或 /友好度 <群号>：直接读内存状态，不走 DSH 代理 */
   async function handleFriendliness(fullText, msg, target, qqKey, isGroup, allowWork) {
@@ -65,15 +65,57 @@ export function createCommandsFeature(deps) {
     return `qq-group-${id}`
   }
 
+  /** /能量 或 /能量 <群号>：查该群能量/冷却/讨论/solo 状态（维护用，读内存不走 DSH 代理） */
+  async function handleEnergy(fullText, msg, target, isGroup, allowWork) {
+    const m = /^\/\s*能量\s*(\d+)?\s*$/.exec(fullText || '')
+    if (!m) return false
+    if (!allowWork) {
+      log('info', '[qq-bridge] 用户 %s 无权限查询能量(已拒绝)', msg.user_id)
+      await bot.sendText(target, '⚠️ 你没有使用工作指令的权限').catch(() => {})
+      return true
+    }
+    let targetGroupId = m[1]
+    if (!targetGroupId) {
+      if (!isGroup) {
+        await bot.sendText(target, '⚠️ 私聊请带群号：/能量 859762634').catch(() => {})
+        return true
+      }
+      targetGroupId = String(msg.group_id)
+    }
+    const gk = qqSessionIdFor(targetGroupId)
+    const e = energy.getEnergy(gk)
+    if (e === undefined) {
+      await bot.sendText(target, `该群（${targetGroupId}）暂无能量数据（群内还没有消息进入能量闸）。`).catch(() => {})
+      return true
+    }
+    const cdMs = energy.cooldownRemainingMs(gk)
+    const cd = cdMs > 0 ? `是（剩 ${Math.ceil(cdMs / 1000)}s）` : '否'
+    const histLen = energy.stats?.()?.[gk]?.historyLen ?? 0
+    const body = [
+      `⚡ 群 ${targetGroupId} 能量状态`,
+      `能量: ${Math.round(e)}`,
+      `冷却: ${cd}`,
+      `讨论: ${discussion.isActive(gk) ? '是' : '否'}`,
+      `solo: ${friends.isSolo(gk) ? '是' : '否'}`,
+      `历史: ${histLen} 条`,
+    ].join('\n')
+    log('info', '[qq-bridge] 查询能量 群=%s 能量=%d 冷却=%dms 讨论=%s', targetGroupId, e, cdMs, discussion.isActive(gk))
+    await bot.sendText(target, body).catch(() => {})
+    return true
+  }
+
   return {
     name: 'commands',
 
-    /** onMessage：处理 /友好度 与 /清除缓存；返回 true=已处理 */
+    /** onMessage：处理 /友好度、/能量、/清除缓存；返回 true=已处理 */
     async onMessage(ctx) {
       const { msg, text, target, qqKey, isGroup, allowWork } = ctx
 
       // /友好度 或 /友好度 <群号>
       if (await handleFriendliness(text, msg, target, qqKey, isGroup, allowWork)) return true
+
+      // /能量 或 /能量 <群号>
+      if (await handleEnergy(text, msg, target, isGroup, allowWork)) return true
 
       // /清除缓存：白名单用户执行，清除全部群一周前的聊天记录
       if (allowWork && text === `/${config.clearCommand}`) {
