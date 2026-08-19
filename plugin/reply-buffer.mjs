@@ -13,6 +13,23 @@
 
 'use strict'
 
+/** 固定提示去重：target+提示文本 → 最近发送时间（毫秒）。
+ *  防止双实例/重复事件下同一提示刷屏（如「内容有点多」「回合结束」）。
+ *  模块级（跨 createReplyBuffer 实例共享）——同一 target 短时间内不重复发相同提示。 */
+const lastHintAt = new Map()
+const HINT_DEDUP_MS = 5000
+
+/** 尝试发固定提示：同 target+文本在 HINT_DEDUP_MS 内已发过则跳过，返回是否真的发出 */
+async function sendHintOnce(sendText, target, text) {
+  const key = `${target?.message_type || '?'}:${target?.group_id ?? target?.user_id ?? '?'}:${text}`
+  const now = Date.now()
+  const last = lastHintAt.get(key) || 0
+  if (now - last < HINT_DEDUP_MS) return false
+  lastHintAt.set(key, now)
+  await sendText(target, text).catch(() => {})
+  return true
+}
+
 export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushMs = 30000, log = () => {}, onReply = () => {} } = {}) {
   /** sessionId -> 缓冲队列（连续消息各自成条目，回合结束消费队头） */
   const buffers = new Map()
@@ -54,15 +71,15 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
         if (typeof r === 'string') sentText = r
       }
       if (reason && reason !== 'completed') {
-        await sendText(buf.qqTarget, `（回合结束：${reason}）`).catch(() => {})
+        await sendHintOnce(sendText, buf.qqTarget, `（回合结束：${reason}）`)
       }
       // 回灌机器人刚发的回复（供下一轮上下文自省，避免重复/衔接断裂）
       onReply({ target: buf.qqTarget, text: sentText })
     } else {
-      // 长回复进行中：只在第一次超时提示一次（hinted 标志防重复），避免刷屏垃圾
+      // 长回复进行中：只在第一次超时提示一次（hinted 标志防重复 + 模块级去重防双实例刷屏）
       if (!buf.hinted) {
         buf.hinted = true
-        await sendText(buf.qqTarget, '…内容有点多，我继续说完').catch(() => {})
+        await sendHintOnce(sendText, buf.qqTarget, '…内容有点多，我继续说完')
       }
     }
     buf.lastFlush = Date.now()
