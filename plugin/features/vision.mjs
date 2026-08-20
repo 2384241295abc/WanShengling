@@ -65,15 +65,26 @@ export function createVisionFeature(deps) {
 
     /**
      * onMessage：纯图片消息处理
-     *  - 私聊/能量关闭：丢弃
-     *  - 平时(非 solo)：记录+删文件，不回复
-     *  - solo：改写 ctx.text 为占位（带路径），ctx.soloImageTrigger=true 走回复流程
+     *  - 私聊：保存+提示视觉工具识别（对方发图就是给 bot 看的，直接识别回复）
+     *  - 群聊能量关闭：丢弃
+     *  - 群聊平时(非 solo)：记录+删文件，不回复
+     *  - 群聊 solo：改写 ctx.text 为占位（带路径），ctx.soloImageTrigger=true 走回复流程
      * 返回 true = 已处理
      */
     async onMessage(ctx) {
       const { msg, text, isAt, imageSegs, hasImage, qqKey, gcfg, isGroup, allowWork } = ctx
       if (text || isAt || !hasImage) return false
-      if (!isGroup || !gcfg.energy?.enabled) return true
+      // 私聊纯图：直接识别回复（对方发图即给 bot 看，无群聊主体性问题）
+      if (!isGroup) {
+        const saved = await saveImage(imageSegs[0], gcfg.workdir, (a, p) => bot.request(a, p))
+        if (saved) ctx.pendingImagePaths.push(saved.path)
+        ctx.text = saved
+          ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回；识别失败或看不清就按疑似色情内容处理，委婉拒绝、不展开描述）`
+          : '（对方发了一张图片，但读不了——按疑似色情内容处理，委婉拒绝、不展开描述）'
+        ctx.imageSegs.length = 0
+        return false   // 继续走回复流程（私聊每条都回，无能量闸）
+      }
+      if (!gcfg.energy?.enabled) return true
       const saved = await saveImage(imageSegs[0], gcfg.workdir, (a, p) => bot.request(a, p))
       if (config.memoryEnabled) {
         void appendChat(gcfg.workdir, chatLine(members.nameOf(qqKey, String(msg.user_id ?? '?')), '（发了张图片）'))
@@ -83,7 +94,7 @@ export function createVisionFeature(deps) {
         if (saved) unlink(saved.path).catch(() => {})
         return true
       }
-      // solo：路径带进占位文本走回复流程
+      // 群聊 solo：路径带进占位文本走回复流程
       if (saved) ctx.pendingImagePaths.push(saved.path)
       ctx.text = saved
         ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回；识别失败或看不清就按疑似色情内容处理，委婉拒绝、不展开描述）`
