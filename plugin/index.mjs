@@ -354,9 +354,10 @@ export function apply(ctx, rawConfig = {}) {
     const target = { message_type: 'group', group_id: Number(groupId), user_id: 0 }
     await promptQueue(sessionId, content, target, '冷却后自动回复')
     friends.markReply(qqKey, selfId)
-    // 🔒 讨论模式：冷却到期的自动回复也重新进入冷却——否则 30~60 能量触发快 + 自动回复不重置冷却，
-    //    讨论中 bot 每 ~15s 连回一条、"没有 cd"感。重新冷却后每 cdMs 至多回一条（冷却期消息照常缓冲、@ 可打破）。
-    if (discussion.isActive(qqKey)) startCooldown(qqKey, groupId)
+    // 🔒 冷却补回后重新进入冷却（非讨论模式也重新冷却）：
+    //    否则补回一条后立即可再触发 → 冷却期消息 + 补回 + 新消息 = 连续回复、"没有 cd"感。
+    //    统一节奏：每次回复（含补回）后都进入冷却，冷却期消息照常缓冲、@ 可打破。
+    startCooldown(qqKey, groupId)
   }
 
   async function onQqMessage(msg) {
@@ -688,6 +689,8 @@ export function apply(ctx, rawConfig = {}) {
     if (ev && ev.self_id) selfId = String(ev.self_id)
   })
   bot.on('message', (msg) => {
+    // 入口日志：记录到达的消息（排查私聊/图片消息未触发问题）
+    log('info', '[qq-bridge] 收到消息 type=%s from=%s group=%s text=%s img=%d', msg.message_type, msg.user_id, msg.group_id ?? '-', (OneBotClient.extractText(msg.message) || '').slice(0, 30), Array.isArray(msg.message) ? msg.message.filter((s) => s?.type === 'image').length : 0)
     const key = msg.message_type === 'group' ? `g${msg.group_id}` : `p${msg.user_id ?? '?'}`
     // /指令(本地插件拦截,如 /友好度 /能量 /清除缓存)绕过串行队列,立即响应 ——
     // 否则队列头被慢 prompt 阻塞时,连本地指令也排队卡住(用户反馈"指令也慢")
