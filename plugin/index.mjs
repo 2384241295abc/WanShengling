@@ -247,11 +247,20 @@ export function apply(ctx, rawConfig = {}) {
   // 串行化后：前一条消息(含 startCooldown/registerImages)完成后才处理下一条，两个竞态一并消除。
   const msgQueues = new Map()
 
+  /** 单条消息处理超时:防止慢 prompt 永久阻塞串行队列(用户反馈回消息慢) */
+  const MSG_TIMEOUT_MS = 90000
+  function withTimeout(p, label) {
+    return Promise.race([
+      p,
+      new Promise((resolve) => setTimeout(() => { log('warn', '[qq-bridge] 消息处理超时(90s): %s', label); resolve() }, MSG_TIMEOUT_MS)),
+    ])
+  }
+
   /** 按 qqKey 入队并返回串行 Promise 链（key: 群号 或 私聊 p<user_id>） */
   function enqueueMsg(key, fn) {
     const prev = msgQueues.get(key) || Promise.resolve()
     const next = prev
-      .then(fn)
+      .then(() => withTimeout(fn(), '队列消息'))
       .catch((err) => log('warn', '[qq-bridge] 消息处理异常: %s', err?.message))
     msgQueues.set(key, next)
     return next
@@ -679,8 +688,15 @@ export function apply(ctx, rawConfig = {}) {
     if (ev && ev.self_id) selfId = String(ev.self_id)
   })
   bot.on('message', (msg) => {
-    // 按群/私聊串行处理（见 enqueueMsg 注释：消除冷却竞态 + 图片回合交错）
     const key = msg.message_type === 'group' ? `g${msg.group_id}` : `p${msg.user_id ?? '?'}`
+    // /指令(本地插件拦截,如 /友好度 /能量 /清除缓存)绕过串行队列,立即响应 ——
+    // 否则队列头被慢 prompt 阻塞时,连本地指令也排队卡住(用户反馈"指令也慢")
+    const rawText = OneBotClient.extractText(msg.message) || ''
+    if (rawText.startsWith('/')) {
+      void onQqMessage(msg).catch((err) => log('warn', '[qq-bridge] 指令处理异常: %s', err?.message))
+      return
+    }
+    // 普通消息:按群/私聊串行处理(消除冷却竞态 + 图片回合交错)
     void enqueueMsg(key, () => onQqMessage(msg))
   })
   bot.on('error', (err) => log('warn', '[qq-bridge] onebot: %s', err.message))
