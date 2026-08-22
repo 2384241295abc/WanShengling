@@ -605,11 +605,19 @@ export function apply(ctx, rawConfig = {}) {
       const pluginBlocks = await features.runOnPrompt({ sessionId, qqKey, gcfg, imageSegs, pendingImagePaths, text })
       content.push(...pluginBlocks)
       // 用户消息放最后（模型注意力集中在用户的话上；纯 @ 消息给默认文本）
-      // 主体标注：群聊时标明"谁说的、是否@了你"——模型据此判断对象主体，而非把所有消息当对自己的
+      // 主体标注：群聊时标明"谁说的、是否@了你、@了谁"——模型据此判断完整行为主体（谁@谁、指令对象是谁）
       if (isGroup) {
         const speaker = members.nameOf(qqKey, String(msg.user_id ?? '?'))
         const atMark = isAt ? '（他@了你）' : '（未@你，不一定是跟你说的）'
-        content.push({ type: 'text', text: `[${speaker} 说：${text || '（无文字）'}]${atMark}` })
+        // 解析本条消息 @ 了谁（除自己外的 at 段），标注被@对象 → 模型能识别"让我跟谁聊"
+        const atOthers = Array.isArray(msg.message)
+          ? msg.message
+              .filter((s) => s?.type === 'at' && String(s.data?.qq) !== String(selfId))
+              .map((s) => members.nameOf(qqKey, String(s.data?.qq)))
+              .filter(Boolean)
+          : []
+        const atMark2 = atOthers.length ? `（还@了：${atOthers.join('、')}）` : ''
+        content.push({ type: 'text', text: `[${speaker} 说：${text || '（无文字）'}]${atMark}${atMark2}` })
       } else {
         content.push({ type: 'text', text: text || '（对方@了你）' })
       }
