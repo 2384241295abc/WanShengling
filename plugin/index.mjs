@@ -587,6 +587,14 @@ export function apply(ctx, rawConfig = {}) {
         const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
         if (fctx) content.push({ type: 'text', text: fctx })
       }
+      // 角色扮演思考模式标记（README: deepseek_v4_roleplay_instruct——独立块放 user 消息附近，非 persona）
+      // 仅影响 <think> 思考风格；回复文本仍守人设铁律。mode: inner_os=角色沉浸 / no_inner_os=纯分析 / default=不加
+      const rp = config.roleplay
+      if (rp?.enabled && rp?.mode === 'inner_os' && rp?.innerOsMarker) {
+        content.push({ type: 'text', text: rp.innerOsMarker })
+      } else if (rp?.enabled && rp?.mode === 'no_inner_os' && rp?.noInnerOsMarker) {
+        content.push({ type: 'text', text: rp.noInnerOsMarker })
+      }
       const scopeNote = gcfg.allowOutside
         ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
         : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`

@@ -68,6 +68,21 @@ export const DEFAULTS = {
     hint: `你可以在回复里用 [发图:xxx] 标记甩一张图（xxx 是表情包库里的文件名关键字，如 [发图:猫猫]）。像真人聊着聊着甩个表情包：能用图表达就不必打字。拿不准或没必要发图时不要用。`, // prompt 提示（人设语境，非硬约束）
   },
 
+  // 角色扮演思考模式（README: deepseek_v4_roleplay_instruct——独立标记块，放 user 消息附近注入，非 persona）
+  // 仅影响 <think> 思考过程，不影响回复文本（回复仍守人设铁律：30字/禁括号）
+  roleplay: {
+    enabled: false,   // 是否注入角色沉浸标记（默认关，开启后思考带括号内心独白）
+    mode: 'inner_os', // 'inner_os'=角色沉浸（思考带括号独白） | 'no_inner_os'=纯分析（思考无独白） | 'default'=不加
+    innerOsMarker: `【角色沉浸要求】在你的思考过程（<think>标签内）中，请遵守以下规则：
+1. 请以角色第一人称进行内心独白，用括号包裹内心活动，例如"（心想：……）"或"(内心OS：……)"
+2. 用第一人称描写角色的内心感受，例如"我心想""我觉得""我暗自"等
+3. 思考内容应沉浸在角色中，通过内心独白分析剧情和规划回复`,
+    noInnerOsMarker: `【思维模式要求】在你的思考过程（<think>标签内）中，请遵守以下规则：
+1. 禁止使用圆括号包裹内心独白，例如"（心想：……）"或"(内心OS：……)"，所有分析内容直接陈述即可
+2. 禁止以角色第一人称描写内心活动，例如"我心想""我觉得""我暗自"等，请用分析性语言替代
+3. 思考内容应聚焦于剧情走向分析和回复内容规划，不要在思考中进行角色扮演式的内心戏表演`,
+  },
+
   // 按群覆盖配置（key = 群号数字，如 "859762634"）
   groups: {},
 
@@ -101,10 +116,11 @@ export function resolveConfig(rawConfig = {}) {
     onebotToken: process.env.DSH_QQ_ONEBOT_TOKEN || rawConfig.onebotToken || DEFAULTS.onebotToken,
     // energy 深层合并（允许补丁只覆盖部分字段）；range 数组独立拷贝防共享污染
     energy: mergeEnergy(DEFAULTS.energy, rawConfig.energy),
-    // subjectivity / discussion / sendImage 深层合并（允许补丁只覆盖部分字段）
+    // subjectivity / discussion / sendImage / roleplay 深层合并（允许补丁只覆盖部分字段）
     subjectivity: mergeBlock(DEFAULTS.subjectivity, rawConfig.subjectivity),
     discussion: mergeBlock(DEFAULTS.discussion, rawConfig.discussion),
     sendImage: mergeBlock(DEFAULTS.sendImage, rawConfig.sendImage),
+    roleplay: mergeBlock(DEFAULTS.roleplay, rawConfig.roleplay),
     groups: rawConfig.groups || DEFAULTS.groups,
     // 工作模式 cwd 默认 ~/Documents/DshDesktop
     workCwd: rawConfig.workCwd || DEFAULTS.workCwd || join(homedir(), 'Documents', 'DshDesktop'),
