@@ -472,16 +472,14 @@ export function apply(ctx, rawConfig = {}) {
 
       // 🔒 回复冷却：刚回复后 cdMs 内，普通消息只缓冲不触发；@ 带文字可打破冷却
       if (energy.inCooldown(qqKey)) {
-        if (askFollowUp) {
-          clearCooldownTimer(qqKey)   // 先清旧定时器：防其到期把冷却期 pending 误当新消息再触发一次
-          energy.breakCooldown(qqKey)   // 追问澄清值得打破冷却（与 @ 带文字同级）
-        } else if (isAt && text) {
+        if (isAt && text) {
           clearCooldownTimer(qqKey)   // 同上：打破冷却必须作废旧定时器，否则可能双回复
           energy.breakCooldown(qqKey)   // @ 带文字打破冷却（真问题值得打断）
         } else if (isAt) {
           return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数 —— 彻底消除"问+紧跟裸@"二次回复
         } else {
-          // 冷却期普通消息入历史+计数，不触发
+          // 冷却期普通消息（含追问澄清）入历史+计数，不触发——
+          // 追问不再打破冷却（2026-08-22 用户要求"CD 期间所有消息只触发一条"）：冷却内追问澄清也缓冲，到期统一补回一条
           energy.feedCooldown(qqKey, String(msg.user_id ?? '?'), text)
           return
         }
