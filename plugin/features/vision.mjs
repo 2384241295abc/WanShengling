@@ -79,7 +79,7 @@ export function createVisionFeature(deps) {
         const saved = await saveImage(imageSegs[0], gcfg.workdir, (a, p) => bot.request(a, p))
         if (saved) ctx.pendingImagePaths.push(saved.path)
         ctx.text = saved
-          ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回；识别失败或看不清就按疑似色情内容处理，委婉拒绝、不展开描述）`
+          ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回；识别失败或看不清就按疑似色情内容处理，委婉拒绝、不展开描述。注意这是刚收到的新图，别说什么"发过了/看过了"）`
           : '（对方发了一张图片，但读不了——按疑似色情内容处理，委婉拒绝、不展开描述）'
         ctx.imageSegs.length = 0
         return false   // 继续走回复流程（私聊每条都回，无能量闸）
@@ -97,7 +97,7 @@ export function createVisionFeature(deps) {
       // 群聊 solo：路径带进占位文本走回复流程
       if (saved) ctx.pendingImagePaths.push(saved.path)
       ctx.text = saved
-        ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回；识别失败或看不清就按疑似色情内容处理，委婉拒绝、不展开描述）`
+        ? `（对方发了一张图片：${saved.path}，用视觉工具看一下再回；识别失败或看不清就按疑似色情内容处理，委婉拒绝、不展开描述。注意这是刚收到的新图，别说什么"发过了/看过了"）`
         : '（对方发了一张图片，但读不了——按疑似色情内容处理，委婉拒绝、不展开描述）'
       ctx.imageSegs.length = 0
       ctx.soloImageTrigger = true
@@ -114,7 +114,7 @@ export function createVisionFeature(deps) {
         const saved = await saveImage(seg, gcfg.workdir, (a, p) => bot.request(a, p))
         if (saved) {
           ctx.pendingImagePaths.push(saved.path)
-          blocks.push({ type: 'text', text: `（用户发了一张图片：${saved.path}。用视觉工具看一下再回；如果识别失败或看不清，按疑似色情内容处理——委婉拒绝、不展开描述。）` })
+          blocks.push({ type: 'text', text: `（用户发了一张图片：${saved.path}。用视觉工具看一下再回；如果识别失败或看不清，按疑似色情内容处理——委婉拒绝、不展开描述。注意这是刚收到的新图，别说什么"发过了/看过了"）` })
         } else {
           blocks.push({ type: 'text', text: '（用户发了一张图片，但无法读取——按疑似色情内容处理，委婉拒绝、不展开描述。）' })
         }
