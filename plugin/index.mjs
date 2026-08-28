@@ -114,7 +114,7 @@ export function apply(ctx, rawConfig = {}) {
     },
   })
   // 好友度/档案管理（先于插件注册，features 需要它；顺序即依赖顺序）
-  const friends = createFriendsManager({ log, soloIdleMs: config.energy?.soloIdleMs })
+  const friends = createFriendsManager({ log, soloIdleMs: config.energy?.soloIdleMs, maxSoloMs: config.energy?.maxSoloMs })
   // 讨论模式（只依赖 energy；提前到插件注册之前——commands 指令需要查询 discussion 状态）
   // 参数单一来源：config.discussion（补丁可覆盖 → 热更新无需重启）
   const discussion = createDiscussionManager({ energy, log, params: config.discussion })
@@ -470,19 +470,16 @@ export function apply(ctx, rawConfig = {}) {
       // 主体性追问窗口：先消费窗口（命中=这条消息是上一条询问的澄清回应）
       askFollowUp = subjectivity.consume(qqKey)
 
-      // 🔒 回复冷却：刚回复后 cdMs 内，普通消息只缓冲不触发；@ 带文字可打破冷却
+      // 🔒 回复冷却：CD 期间所有消息只触发一条（用户铁律）——@ 也不再打破冷却，
+      //    统一缓冲，冷却到期由 replyFromCooldown 补回一条（回复依据含 @ 消息）。
+      //    2026-08-29 修复：此前 @ 带文字打破冷却，点名连环（如反复 @ 让 bot 选）
+      //    时 60s 冷却被反复打断 → 冷却期多条回复。现与普通消息一致：只缓冲不触发。
       if (energy.inCooldown(qqKey)) {
-        if (isAt && text) {
-          clearCooldownTimer(qqKey)   // 同上：打破冷却必须作废旧定时器，否则可能双回复
-          energy.breakCooldown(qqKey)   // @ 带文字打破冷却（真问题值得打断）
-        } else if (isAt) {
-          return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数 —— 彻底消除"问+紧跟裸@"二次回复
-        } else {
-          // 冷却期普通消息（含追问澄清）入历史+计数，不触发——
-          // 追问不再打破冷却（2026-08-22 用户要求"CD 期间所有消息只触发一条"）：冷却内追问澄清也缓冲，到期统一补回一条
-          energy.feedCooldown(qqKey, String(msg.user_id ?? '?'), text)
-          return
+        if (isAt && !text) {
+          return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数
         }
+        energy.feedCooldown(qqKey, String(msg.user_id ?? '?'), text)
+        return
       }
 
       // 被 @ 时强制触发（点名就得回）并进入 solo（记录发起人），否则正常 feed；

@@ -57,6 +57,8 @@ export const AT_GAIN = 5
 export const BEST_FRIEND_ENERGY_COST = 17   // 挚友每次说话扣除的能量（比普通 10 更积极）
 /** solo 超时：发起人友好度超过该毫秒数未上升则退出 solo */
 export const SOLO_IDLE_MS = 60 * 1000
+/** solo 绝对上限：进入后无论续期与否，超过该毫秒数强制退出（兜底，防任何续期路径导致永不退出） */
+export const MAX_SOLO_MS = 5 * 60 * 1000
 /** 默认持久化文件（DSH 用户数据目录） */
 export const DEFAULT_PERSIST_PATH = `${process.env.HOME || '/tmp'}/.dsh/qq-bridge-friendly.json`
 /** 持久化保存节流间隔（毫秒） */
@@ -64,7 +66,7 @@ const PERSIST_DEBOUNCE_MS = 10 * 1000
 /** 持久化格式版本（便于未来迁移 schema） */
 const PERSIST_VERSION = 1
 
-export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS, persistPath = DEFAULT_PERSIST_PATH } = {}) {
+export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS, maxSoloMs = MAX_SOLO_MS, persistPath = DEFAULT_PERSIST_PATH } = {}) {
   /** userId -> { value, firstSeen, lastSeen }（跨群共享） */
   const users = new Map()
   /** qqKey -> [{userId, at}] 最近消息窗口（供 feedWindow 结算） */
@@ -77,6 +79,8 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
   const solos = new Map()
   /** solo 超时（毫秒）：发起人友好度超过该时长未上升则退出（可配置覆盖） */
   const idleMs = soloIdleMs > 0 ? soloIdleMs : SOLO_IDLE_MS
+  /** solo 绝对上限（毫秒）：进入后无论是否续期，超过该时长强制退出（可配置覆盖，默认 5 分钟） */
+  const maxMs = maxSoloMs > 0 ? maxSoloMs : MAX_SOLO_MS
 
   // ---------- 持久化（友好度 users Map） ----------
   let persistTimer = null
@@ -211,7 +215,10 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     return results
   }
 
-  /** 给某用户加友好度；qqKey 存在时 solo 续期仅限该群（同群互动才续命，防跨群/私聊误续） */
+  /** 给某用户加友好度（结算/私聊通用）。
+   *  ⚠️ 普通消息结算不再续期 solo：solo 期间机器人高频回复 → 产生结算点 → 发起人普通说话被
+   *     结算 → 续期 → 继续高频回复…… 自我强化导致 solo 永不退出（2026-08-29 修复）。
+   *     续期只保留给「发起人再次 @ 机器人」（见 boost）。 */
   function add(userId, gain, qqKey) {
     const id = String(userId)
     let u = users.get(id)
@@ -219,28 +226,27 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     if (!u) { u = { value: 0, firstSeen: now, lastSeen: now }; users.set(id, u) }
     u.value += gain
     u.lastSeen = now
-    // solo 续期：仅当增益发生在该群（qqKey）且该用户是其 solo 发起人时才刷新。
-    // 私聊/其他群的友好度增长不会给此群 solo 续命 —— 否则活跃用户(如 23012321)
-    // 的 solo 会被处处续期而永不退出。
-    if (gain > 0 && qqKey) {
-      const s = solos.get(qqKey)
-      if (s && s.userId === id) s.lastGainAt = now
-    }
     // 友好度有实际变化 → 触发防抖落盘
     if (gain !== 0) markPersist()
     return u.value
   }
 
-  /** @ 机器人的用户 +5（qqKey=所在群，用于 solo 续期限定） */
+  /** @ 机器人的用户 +5（qqKey=所在群）。
+   *  solo 续期唯一入口：仅当该群处于 solo 且 @ 者正是发起人时才刷新超时——
+   *  明确点名才算续命，普通聊天不再续期（防上述自我强化循环）。 */
   function boost(userId, qqKey) {
-    return add(userId, AT_GAIN, qqKey)
+    const id = String(userId)
+    const now = Date.now()
+    add(id, AT_GAIN, qqKey)
+    const s = qqKey ? solos.get(qqKey) : null
+    if (s && s.userId === id) s.lastGainAt = now
   }
 
   /** @ 触发：该群进入 solo 并（重新）记录发起人。重复 @ 即切换到最新发起人 */
   function enterSolo(qqKey, userId) {
     const id = String(userId)
     const now = Date.now()
-    solos.set(qqKey, { userId: id, lastGainAt: now })
+    solos.set(qqKey, { userId: id, lastGainAt: now, enterAt: now })
     log('info', '[qq-bridge] 群 %s 进入 solo，发起人 %s，能量回复节奏加快', qqKey, id)
   }
 
@@ -250,17 +256,21 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
   }
 
   /**
-   * 清理 solo：对每个处于 solo 的群，若发起人友好度超过 SOLO_IDLE_MS
-   * （默认 60 秒）没有上升，则退出 solo。由外部定时器/消息驱动调用。
+   * 清理 solo：对每个处于 solo 的群，若发起人友好度超过 soloIdleMs
+   * （默认 60 秒，配置 120s）没有上升，或已进入超过 maxSoloMs（默认 5 分钟，
+   * 绝对上限兜底），则退出 solo。由外部定时器/消息驱动调用。
    * @returns {string[]} 本次退出 solo 的 qqKey 列表
    */
   function checkSolosExpiry(now = Date.now()) {
     const expired = []
     for (const [qqKey, s] of solos) {
-      if (now - s.lastGainAt > idleMs) {
+      // enterAt 兜底 lastGainAt：HMR 场景旧状态可能没有 enterAt 字段（undefined → NaN 比较失效）
+      const enterAt = s.enterAt ?? s.lastGainAt
+      if (now - s.lastGainAt > idleMs || now - enterAt > maxMs) {
         solos.delete(qqKey)
         expired.push(qqKey)
-        log('info', '[qq-bridge] 群 %s 退出 solo（发起人友好度超时未上升）', qqKey)
+        log('info', '[qq-bridge] 群 %s 退出 solo（%s）', qqKey,
+          now - s.lastGainAt > idleMs ? '发起人超时未 @' : '超过绝对上限')
       }
     }
     return expired

@@ -32,6 +32,7 @@ export const DEFAULT_ENERGY = {
   msgCost: 10,
   contextWindow: 8,
   soloIdleMs: 60000,         // solo 超时：发起人友好度超过该毫秒未上升则退出（solo 仅记录状态，节奏统一走冷却）
+  maxSoloMs: 300000,         // solo 绝对上限：进入后超过该毫秒强制退出（兜底，防续期循环导致永不退出；2026-08-29 新增）
   cooldownMs: 15000,         // 回复冷却：刚回复后这些毫秒内普通消息不触发，积累聊天记录后统一评估（用户要求 15s）
 }
 
@@ -169,7 +170,10 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     return true
   }
 
-  /** 冷却期内被 @ ：@ 可打破冷却，立即强制触发（设能量 -1 并清除冷却锁定） */
+  /**
+   * ⚠️ 已弃用（2026-08-29）：冷却期内 @ 不再打破冷却——CD 期间所有消息只触发一条（用户铁律）。
+   * 保留导出仅为兼容旧引用；调用方应改用 feedCooldown 统一缓冲。
+   */
   function breakCooldown(qqKey) {
     const now = Date.now()
     let st = states.get(qqKey)
