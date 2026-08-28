@@ -30,6 +30,16 @@ async function sendHintOnce(sendText, target, text) {
   return true
 }
 
+/** 跨回合完全去重（2026-08-29）：同一 target 在去重窗口内已发过完全相同的回复 → 跳过发送。
+ *  修复"连着发两次同一句话"：独立回合（如冷却到期后新 @ 触发）模型可能复读上一条
+ *  （实测 01:35 连续两条"今日运势"）。机制层兜底：任何来源的完全重复都不再发出。 */
+const lastSentReply = new Map()   // target key -> { text, at }
+const REPLY_DEDUP_MS = 60000      // 60s 窗口内相同文本视为重复（间隔久了允许再说同样的话）
+
+function targetKey(t) {
+  return `${t?.message_type || '?'}:${t?.group_id ?? t?.user_id ?? '?'}`
+}
+
 export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushMs = 30000, log = () => {}, onReply = () => {} } = {}) {
   /** sessionId -> 缓冲队列（连续消息各自成条目，回合结束消费队头） */
   const buffers = new Map()
@@ -64,12 +74,22 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
     // 以 sendText 返回值（清理后的文本）为准回灌，避免标记残留进聊天记录
     let sentText = text
     if (done) {
+      // 🔒 跨回合去重：上一条回复与此完全相同（60s 内）→ 跳过发送，防"连着发两次同一句话"。
+      //    不回灌（chatlog 不再多一条重复），让下一条正常消息重新触发。
+      const key = targetKey(buf.qqTarget)
+      const prev = lastSentReply.get(key)
+      if (prev && prev.text === text && Date.now() - prev.at < REPLY_DEDUP_MS) {
+        log('warn', '[qq-bridge] 回复去重：%s 与 %d 秒前回复相同，跳过发送（%s）',
+          key, Math.round((Date.now() - prev.at) / 1000), text.slice(0, 30))
+        return
+      }
       for (let i = 0; i < text.length; i += maxChunkLength) {
         // 接受 sendText 返回的清理后文本（可为空串——纯发图时无文字回灌）；
         // 仅当返回 null（发送失败）时保留原文本
         const r = await sendText(buf.qqTarget, text.slice(i, i + maxChunkLength)).catch(() => null)
         if (typeof r === 'string') sentText = r
       }
+      lastSentReply.set(key, { text, at: Date.now() })
       if (reason && reason !== 'completed') {
         await sendHintOnce(sendText, buf.qqTarget, `（回合结束：${reason}）`)
       }
