@@ -255,6 +255,11 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     return solos.has(qqKey)
   }
 
+  /** 当前 solo 发起人 userId；非 solo 返回 null（供触发范围收窄：solo 只对发起人 force） */
+  function soloOwner(qqKey) {
+    return solos.get(qqKey)?.userId ?? null
+  }
+
   /**
    * 清理 solo：对每个处于 solo 的群，若发起人友好度超过 soloIdleMs
    * （默认 60 秒，配置 120s）没有上升，或已进入超过 maxSoloMs（默认 5 分钟，
@@ -331,5 +336,5 @@ export function createFriendsManager({ log = () => {}, soloIdleMs = SOLO_IDLE_MS
     return out
   }
 
-  return { get, level, levelLabel, recordMessage, markReply, checkSettle, boost, add, friendEnergyCost, groupTotal, groupTotalAll, setGroupMembers, buildContext, stats, enterSolo, isSolo, checkSolosExpiry, dispose }
+  return { get, level, levelLabel, recordMessage, markReply, checkSettle, boost, add, friendEnergyCost, groupTotal, groupTotalAll, setGroupMembers, buildContext, stats, enterSolo, isSolo, soloOwner, checkSolosExpiry, dispose }
 }

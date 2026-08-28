@@ -46,6 +46,19 @@ export function mediaTypeFromPath(p) {
   return EXT_MEDIA[(extname(p || '').toLowerCase())] || 'image/jpeg'
 }
 
+/** 按魔数检测真实图片格式（覆盖 .suf 等 QQ/NapCat 缓存后缀）：
+ *  .suf 常是 GIF/PNG 内容但带错误扩展名 → free-vision 按扩展名推断 mediaType 给 GLM 会解析失败(400)。
+ *  返回规范扩展名；识别不出返回 null（调用方保持原扩展名）。 */
+export function detectImageExt(buf) {
+  if (!buf || buf.length < 12) return null
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return '.gif'          // GIF87a/89a
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return '.png'
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return '.jpg'
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 &&
+      buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return '.webp'
+  return null
+}
+
 /**
  * 保存一张 QQ 图片到 dir，返回 { path, mediaType }；失败/超限返回 null。
  * 取图三路：段内本地 path → OneBot get_image → 段内 url 下载。
@@ -95,6 +108,12 @@ export async function saveImage(seg, dir, request) {
       if (buf.length > MAX_IMAGE_BYTES) { await debug(`图片超限 ${buf.length}B`); return null }
       ext = extname(url)
       await debug(`url 下载 ok (${buf.length}B)`)
+    }
+    // 🔧 魔数修正扩展名：.suf 等缓存后缀可能是 GIF/PNG 内容，带错后缀会让视觉工具(如 GLM)解析失败
+    const realExt = detectImageExt(buf)
+    if (realExt) {
+      if (ext !== realExt) await debug(`扩展名修正: ${ext || '(无)'} -> ${realExt}`)
+      ext = realExt
     }
     const name = `qqimg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext || '.jpg'}`
     const dest = join(dir, name)

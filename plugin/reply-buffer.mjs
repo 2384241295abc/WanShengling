@@ -75,12 +75,14 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
     let sentText = text
     if (done) {
       // 🔒 跨回合去重：上一条回复与此完全相同（60s 内）→ 跳过发送，防"连着发两次同一句话"。
-      //    不回灌（chatlog 不再多一条重复），让下一条正常消息重新触发。
+      //    不回灌（chatlog 不再多一条重复）；但仍通知 onReply（sent:false）→ 宿主照常进入
+      //    冷却（它"本该回复"），避免去重后下一条消息立刻又触发。
       const key = targetKey(buf.qqTarget)
       const prev = lastSentReply.get(key)
       if (prev && prev.text === text && Date.now() - prev.at < REPLY_DEDUP_MS) {
         log('warn', '[qq-bridge] 回复去重：%s 与 %d 秒前回复相同，跳过发送（%s）',
           key, Math.round((Date.now() - prev.at) / 1000), text.slice(0, 30))
+        onReply({ target: buf.qqTarget, text, sent: false })
         return
       }
       for (let i = 0; i < text.length; i += maxChunkLength) {
@@ -93,8 +95,8 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
       if (reason && reason !== 'completed') {
         await sendHintOnce(sendText, buf.qqTarget, `（回合结束：${reason}）`)
       }
-      // 回灌机器人刚发的回复（供下一轮上下文自省，避免重复/衔接断裂）
-      onReply({ target: buf.qqTarget, text: sentText })
+      // 回灌机器人刚发的回复（供下一轮上下文自省，避免重复/衔接断裂）+ 触发冷却
+      onReply({ target: buf.qqTarget, text: sentText, sent: true })
     } else {
       // 长回复进行中：只在第一次超时提示一次（hinted 标志防重复 + 模块级去重防双实例刷屏）
       if (!buf.hinted) {

@@ -174,17 +174,26 @@ export function apply(ctx, rawConfig = {}) {
     forceFlushMs: config.forceFlushMs,
     log,
     // 机器人回复发出后回灌到该群聊天历史（供下一轮自省衔接，不扣能量）
-    onReply: ({ target, text }) => {
-      if (config.energy?.enabled && target?.message_type === 'group' && target.group_id && text) {
+    onReply: ({ target, text, sent }) => {
+      if (config.energy?.enabled && target?.message_type === 'group' && target.group_id) {
         const gk = qqSessionId('group', target.group_id)
-        energy.recordBotReply(gk, text)
-        // 主体性规则：本回复若以问号结尾（对象询问）→ 开 15s 追问窗口
-        // （守卫与能量闸 consume 对齐：群能量启用才开窗，避免窗口开了无人消费）
-        if (groups.get(gk)?.energy?.enabled) subjectivity.onBotReply(gk, text)
-        // 文件记忆：机器人回复写入该群 chatlog.md
-        if (config.memoryEnabled) {
-          const wd = groups.get(gk)?.workdir
-          if (wd) void appendChat(wd, chatLine(config.botName || '我', text))
+        // 🔒 冷却起点（2026-08-29 重构）：回复真正发出后启动冷却 + 重置能量——
+        //    冷却=两次回复的最小间隔；能量=冷却外的稀疏度。sent=false（去重跳过）同样进入
+        //    冷却（它"本该回复"），但不回灌 chatlog（避免重复记录）。
+        startCooldown(gk)
+        if (discussion.isActive(gk)) discussion.onReply(gk)
+        else energy.reset(gk)   // 非讨论：能量恢复到 range（活跃群冷却期 feed 扣能，到期后自然触发）
+        if (text) {
+          if (!sent) return   // 去重跳过：只进冷却，不重复回灌/开窗
+          energy.recordBotReply(gk, text)
+          // 主体性规则：本回复若以问号结尾（对象询问）→ 开 15s 追问窗口
+          // （守卫与能量闸 consume 对齐：群能量启用才开窗，避免窗口开了无人消费）
+          if (groups.get(gk)?.energy?.enabled) subjectivity.onBotReply(gk, text)
+          // 文件记忆：机器人回复写入该群 chatlog.md
+          if (config.memoryEnabled) {
+            const wd = groups.get(gk)?.workdir
+            if (wd) void appendChat(wd, chatLine(config.botName || '我', text))
+          }
         }
       }
       // 插件回复钩子
@@ -235,9 +244,8 @@ export function apply(ctx, rawConfig = {}) {
     throw new Error(`${lastErr?.code || 'unknown'}: ${lastErr?.message || JSON.stringify(lastErr) || 'prompt rejected'}`)
   }
 
-  // ---------- 回复冷却(cooldown)定时器 ----------
-  /** qqKey -> setTimeout 句柄（冷却到期触发回复用；disposer 需清理） */
-  const cooldownTimers = new Map()
+  // ---------- 回复冷却(cooldown) ----------
+  // （2026-08-29 重构：无定时器/无补回，冷却只做间隔标记，见 startCooldown/onReply 接线）
 
   // 🔒 per-群消息串行队列：同群消息严格按到达顺序处理。
   // 此前 bot.on('message') 对每条消息 fire-and-forget 并发处理，导致两个竞态 bug：
@@ -266,34 +274,13 @@ export function apply(ctx, rawConfig = {}) {
     return next
   }
 
-  /** 进入冷却并安排到期回调：冷却期有积累的新消息时，到期后主动触发一次回复（依据=冷却期聊天记录） */
-  function startCooldown(qqKey, groupId) {
+  /** 回复发出后进入冷却（2026-08-29 重构：无定时器、无补回——只标记冷却区间，
+   *  冷却到期由消息到达时的 inCooldown 检查自然失效；回复只由消息驱动）。
+   *  调用点：onReply 回调（回复真正发送后），见下方 reply-buffer 接线。 */
+  function startCooldown(qqKey) {
     // 冷却时长单一来源：config.energy.cooldownMs（DEFAULT_ENERGY 提供默认值）
     const cdMs = config.energy?.cooldownMs ?? 15000
     energy.beginCooldown(qqKey, cdMs)
-    clearCooldownTimer(qqKey)
-    const timer = setTimeout(() => {
-      cooldownTimers.delete(qqKey)
-      // 到期：解除锁定、恢复能量；若有冷却期积累消息 → 主动回一条
-      const res = energy.cooldownExpired(qqKey)
-      if (res?.expired && config.energy?.enabled) {
-        // 🔒 讨论模式能量节奏：cooldownExpired 恢复的是常态区间(500-1500)，会盖掉讨论的 30~60 重置，
-        //    导致讨论中 bot 近乎沉默、且能量永远达不到 -24 退出阈值 → 讨论模式退不出去。
-        //    讨论中到期 → 按讨论节奏恢复 30~60（onReply 幂等：非讨论群 no-op）。
-        if (discussion.isActive(qqKey)) discussion.onReply(qqKey)
-        if (res?.hasPending) {
-          // 定时器回调也走 per-群串行队列：与消息触发的回复互斥，杜绝同群双 prompt/双回复
-          void enqueueMsg(`g${groupId}`, () => replyFromCooldown(qqKey, String(groupId))).catch((err) =>
-            log('warn', '[qq-bridge] 冷却后自动回复失败: %s', err?.message))
-        }
-      }
-    }, cdMs)
-    cooldownTimers.set(qqKey, timer)
-  }
-
-  function clearCooldownTimer(qqKey) {
-    const t = cooldownTimers.get(qqKey)
-    if (t) { clearTimeout(t); cooldownTimers.delete(qqKey) }
   }
 
   // ---------- 后台状态查询：周期落盘 ~/.dsh/qq-bridge-energy.json（cat 即可查看） ----------
@@ -317,48 +304,6 @@ export function apply(ctx, rawConfig = {}) {
   }
   const statusTimer = setInterval(writeStatus, 30000)
   writeStatus()
-
-  /**
-   * 冷却到期、且期间有新消息时：基于「冷却期聊天记录 + 最新消息」主动回一条。
-   * 复用 onQqMessage 的 prompt 构建思路，但不重跑观察/记录/结算副作用（防止重复计数）。
-   */
-  async function replyFromCooldown(qqKey, groupId) {
-    const gcfg = groups.get(qqKey)
-    if (!gcfg?.energy?.enabled) return
-    // 会话：cwd 与群配置一致才复用
-    const sessionId = await sessions.ensure(qqKey, gcfg.workdir)
-    const content = []
-    const persona = buildPersonaPrompt(gcfg)
-    if (persona) content.push({ type: 'text', text: persona })
-    const dctx = discussion.getContext(qqKey)
-    if (dctx) content.push({ type: 'text', text: dctx })
-    // 主体性规则块：冷却后自动回复同样要判断对象主体（与 onQqMessage 路径一致）
-    content.push({ type: 'text', text: subjectivity.ruleText() })
-    if (config.memoryEnabled) {
-      content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
-    } else {
-      const mctx = members.buildContext(qqKey, selfId)
-      if (mctx) content.push({ type: 'text', text: mctx })
-      const gctx = energy.getContext(qqKey, true)   // 省略"当前"这条仅剩历史，冷却期消息已在历史里
-      if (gctx) content.push({ type: 'text', text: gctx })
-    }
-    // 🔒 冷却期可能有纯图消息（占位文本含图片路径）：从 energy 历史提取并注入图片提示，
-    //    否则 memoryEnabled 模式下模型只读 chatlog（纯图记录无路径）→ 不知道有图 → 臆想"打不开"
-    const imgHint = energy.pendingImageHint?.(qqKey)
-    if (imgHint) content.push({ type: 'text', text: imgHint })
-    content.push({ type: 'text', text: '（刚刚有人说话了，自然接一句。）' })
-    const scopeNote = gcfg.allowOutside
-      ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
-      : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
-    content.push({ type: 'text', text: scopeNote })
-    const target = { message_type: 'group', group_id: Number(groupId), user_id: 0 }
-    await promptQueue(sessionId, content, target, '冷却后自动回复')
-    friends.markReply(qqKey, selfId)
-    // 🔒 冷却补回后重新进入冷却（非讨论模式也重新冷却）：
-    //    否则补回一条后立即可再触发 → 冷却期消息 + 补回 + 新消息 = 连续回复、"没有 cd"感。
-    //    统一节奏：每次回复（含补回）后都进入冷却，冷却期消息照常缓冲、@ 可打破。
-    startCooldown(qqKey, groupId)
-  }
 
   async function onQqMessage(msg) {
     // 🔇 禁言开关：muted=true 时完全不触发任何回复（含群聊/@/私聊/识图/工作指令），仅记日志，便于调试
@@ -470,15 +415,15 @@ export function apply(ctx, rawConfig = {}) {
       // 主体性追问窗口：先消费窗口（命中=这条消息是上一条询问的澄清回应）
       askFollowUp = subjectivity.consume(qqKey)
 
-      // 🔒 回复冷却：CD 期间所有消息只触发一条（用户铁律）——@ 也不再打破冷却，
-      //    统一缓冲，冷却到期由 replyFromCooldown 补回一条（回复依据含 @ 消息）。
-      //    2026-08-29 修复：此前 @ 带文字打破冷却，点名连环（如反复 @ 让 bot 选）
-      //    时 60s 冷却被反复打断 → 冷却期多条回复。现与普通消息一致：只缓冲不触发。
+      // 🔒 回复冷却：CD 期间所有消息只触发一条（用户铁律）——@ 也不触发，统一累积。
+      //    2026-08-29 重构：冷却期消息正常 feed（扣能量+入历史），冷却到期后第一条消息
+      //    自然触发（活跃群能量已为负）——无定时器、无补回、无 pending，杜绝连发竞态。
       if (energy.inCooldown(qqKey)) {
         if (isAt && !text) {
           return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数
         }
-        energy.feedCooldown(qqKey, String(msg.user_id ?? '?'), text)
+        energy.feed(qqKey, String(msg.user_id ?? '?'), text,
+          friends.friendEnergyCost(String(msg.user_id ?? '')) || (gcfg.energy.msgCost ?? 10))
         return
       }
 
@@ -493,9 +438,11 @@ export function apply(ctx, rawConfig = {}) {
       } else if (isAt) {
         friends.enterSolo(qqKey, String(msg.user_id ?? '?'))
         energy.force(qqKey)
-      } else if (soloImageTrigger || friends.isSolo(qqKey)) {
+      } else if (soloImageTrigger || (friends.isSolo(qqKey) && String(msg.user_id ?? '?') === friends.soloOwner(qqKey))) {
+        // 🔒 solo force 收窄（2026-08-29）：只对发起人本人 force（点名热情保留），
+        //    其他人普通消息走能量阈值（低频）——否则 solo 期间群里每条消息都强制回复 = 高频刷屏。
         energy.force(qqKey)
-        // solo 期间普通消息不写 history（force 不记录），手动补记一条保证上下文连贯
+        // solo 期间发起人消息不写 history（force 不记录），手动补记一条保证上下文连贯
         energy.record(qqKey, String(msg.user_id ?? '?'), text)
         fedCurrentMsg = true
       } else {
@@ -621,18 +568,8 @@ export function apply(ctx, rawConfig = {}) {
 
       // 异步入队（accepted 即返回；回复走事件流）
       await promptQueue(sessionId, content, target, text || '（对方@了你）')
-      // 群聊：回复已入队，重置能量（开始下一轮衰减）+ 进入回复冷却
-      if (isGroup && gcfg.energy?.enabled) {
-        if (discussion.isActive(qqKey)) {
-          // 讨论模式：重置能量 30~60,且同样进入冷却(统一节奏——否则 30~60 能量 3~6 条消息就再触发,回复过频)
-          discussion.onReply(qqKey)
-          startCooldown(qqKey, msg.group_id)
-          log('info', '[qq-bridge] 群 %s 讨论中回复，能量已重置并进入冷却', qqKey)
-        } else {
-          // 🔒 统一节奏（含 solo）：回复后进入冷却(锁 -1/缓冲消息/到期自动评估)，能量在到期后按配置恢复
-          startCooldown(qqKey, msg.group_id)
-        }
-      }
+      // 🔒 冷却在"回复真正发出后"由 onReply 回调启动（见 reply-buffer 接线）——
+      //    入队时只标记友好度结算点。避免慢模型生成期间冷却提前到期导致连发。
       // 机器人发言：群聊标记友好度结算点（等后5句到齐后结算）
       if (isGroup) {
         friends.markReply(qqKey, selfId)
@@ -773,8 +710,6 @@ export function apply(ctx, rawConfig = {}) {
       clearInterval(statusTimer)
       muxAbort.abort()               // 关闭 mux 订阅（question/approval 帧流）
       writeStatus()                  // 最终落盘一次状态
-      for (const t of cooldownTimers.values()) clearTimeout(t)
-      cooldownTimers.clear()
       msgQueues.clear()            // 串行队列：dispose 后不再入队新消息
       friends.dispose()            // 最终保存友好度 + 清理持久化定时器
       subjectivity.clear()         // 清理主体性追问窗口
