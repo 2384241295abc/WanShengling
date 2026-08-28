@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { writeFileSync, renameSync } from 'node:fs'
+import { writeFileSync, renameSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { OneBotClient } from './onebot-client.mjs'
@@ -311,6 +311,14 @@ export function apply(ctx, rawConfig = {}) {
       log('info', '[qq-bridge] 禁言中，忽略消息: %s', (OneBotClient.extractText(msg.message) || '（无文字）').slice(0, 40))
       return
     }
+    // 🐞 调试（2026-08-29 临时）：记录消息处理入口状态，诊断"@没反应"
+    try {
+      const _t = OneBotClient.extractText(msg.message) || ''
+      const _at = selfId ? isAtBot(msg.message, selfId) : 'NO_SELF'
+      const _cd = energy.inCooldown(qqSessionId(msg.message_type, msg.group_id ?? msg.user_id))
+      appendFileSync(join(homedir(), '.dsh', 'qq-bridge-debug.log'),
+        `[${new Date().toISOString()}] type=${msg.message_type} group=${msg.group_id ?? '-'} from=${msg.user_id} selfId=${selfId || '(空)'} isAt=${_at} cd=${_cd} gcfgEn=${groups.get(qqSessionId(msg.message_type, msg.group_id ?? msg.user_id))?.energy?.enabled} text=${_t.slice(0, 30)}\n`)
+    } catch {}
     // 自身消息（代理号给自己发消息触发远程指令）：仅当 allowSelfMessages 开启，
     // 且按工作指令处理（可触发 DSH 代理），但绝不回复给自己（防循环）。
     const isSelf = selfId && String(msg.user_id) === String(selfId)
@@ -336,7 +344,12 @@ export function apply(ctx, rawConfig = {}) {
     }
     let text = OneBotClient.extractText(msg.message)   // let：solo 纯图分支会改写为占位文本
     // @ 检测必须在 text 过滤之前：@消息可能只有 @ 段(文本为空)，也要触发回复
-    const isAt = selfId ? isAtBot(msg.message, selfId) : false
+    // 🔒 点名识别方案 D（2026-08-29）：at 段匹配（系统 @）**或** 文本含 botName/selfId——
+    //    覆盖"客户端把 @ 打成纯文本"导致的 at 段缺失（实测 @万生玲+文字 isAt=false 被当普通消息无视）。
+    //    提到名字即视为点名：点名必回、进 solo、友好度+5。
+    const isAt = selfId
+      ? (isAtBot(msg.message, selfId) || text.includes(config.botName || '') || text.includes(selfId))
+      : false
     // 图片段（表情包也是 image 段；face 系统表情不在此列，直接丢弃）
     const imageSegs = extractImages(msg.message)
     const hasImage = imageSegs.length > 0
@@ -635,6 +648,10 @@ export function apply(ctx, rawConfig = {}) {
   bot.on('meta_event', (ev) => {
     // 记录机器人自身 QQ 号（heartbeat/lifecycle 都带 self_id），供 @ 检测
     if (ev && ev.self_id) selfId = String(ev.self_id)
+    try {
+      appendFileSync(join(homedir(), '.dsh', 'qq-bridge-debug.log'),
+        `[${new Date().toISOString()}] meta_event type=${ev?.meta_event_type} self_id=${ev?.self_id} → selfId=${selfId}\n`)
+    } catch {}
   })
   bot.on('message', (msg) => {
     // 入口日志：记录到达的消息（排查私聊/图片消息未触发问题）
