@@ -180,7 +180,9 @@ export function apply(ctx, rawConfig = {}) {
         // 🔒 冷却起点（2026-08-29 重构）：回复真正发出后启动冷却 + 重置能量——
         //    冷却=两次回复的最小间隔；能量=冷却外的稀疏度。sent=false（去重跳过）同样进入
         //    冷却（它"本该回复"），但不回灌 chatlog（避免重复记录）。
+        // 🔒 2026-08-30 防连发（方向 1）：回复已发出 → 清"在途"标记（窗口期结束，进入正式冷却）
         startCooldown(gk)
+        energy.clearInFlight(gk)
         if (discussion.isActive(gk)) discussion.onReply(gk)
         else energy.reset(gk)   // 非讨论：能量恢复到 range（活跃群冷却期 feed 扣能，到期后自然触发）
         if (text) {
@@ -431,7 +433,9 @@ export function apply(ctx, rawConfig = {}) {
       // 🔒 回复冷却：CD 期间所有消息只触发一条（用户铁律）——@ 也不触发，统一累积。
       //    2026-08-29 重构：冷却期消息正常 feed（扣能量+入历史），冷却到期后第一条消息
       //    自然触发（活跃群能量已为负）——无定时器、无补回、无 pending，杜绝连发竞态。
-      if (energy.inCooldown(qqKey)) {
+      //    🔒 2026-08-30 防连发（方向 1）：inFlight=回复入队后未发出（"生成完成→发送完成"窗口期）
+      //    的消息同样只缓冲不触发——修复窗口期内消息继承负能量二次触发的连发（详见 energy.mjs）。
+      if (energy.inCooldown(qqKey) || energy.inFlight(qqKey)) {
         if (isAt && !text) {
           return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数
         }
@@ -592,6 +596,14 @@ export function apply(ctx, rawConfig = {}) {
       await promptQueue(sessionId, content, target, text || '（对方@了你）')
       // 🔒 冷却在"回复真正发出后"由 onReply 回调启动（见 reply-buffer 接线）——
       //    入队时只标记友好度结算点。避免慢模型生成期间冷却提前到期导致连发。
+      // 🔒 2026-08-30 防连发（方向 1+2）：入队成功后立即——
+      //    · markInFlight：该群"回复在途"，窗口期（生成完成→发送完成）消息只缓冲不触发；
+      //    · energy.reset（非讨论）：能量提前回正，窗口期消息即使绕过标记（如 inFlight TTL 边界）
+      //      一 feed 也为正 → 不再继承触发前负值二次触发。讨论模式能量由 discussion.onReply 管理，不入队重置。
+      if (isGroup && gcfg.energy?.enabled) {
+        if (!discussion.isActive(qqKey)) energy.reset(qqKey)
+        energy.markInFlight(qqKey)
+      }
       // 机器人发言：群聊标记友好度结算点（等后5句到齐后结算）
       if (isGroup) {
         friends.markReply(qqKey, selfId)
