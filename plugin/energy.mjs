@@ -38,6 +38,8 @@ export const DEFAULT_ENERGY = {
   cooldownMs: 15000,         // 回复冷却：回复发出后这些毫秒内消息不触发（用户要求 15s）
   inFlightTtlMs: 180000,     // 回复"在途"标记有效期：入队后该毫秒内同群消息不触发（防连发，见 index.mjs）
                              //   ——超过自动失效，防 onReply 异常导致该群永久卡回复
+  replyAfterCooldown: true,  // CD 到期补回：冷却期内有消息 → 冷却到期自动回一条（不等新消息）。
+                             //   2026-08-30 恢复"补回"能力（8/29 曾因竞态删除），现以 inFlight 互斥安全实现
 }
 
 export function createEnergyManager({ energy = {}, log = () => {}, resolveName = (userId) => userId, botName = '我' } = {}) {
@@ -185,6 +187,44 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     return !!(st && st.inFlightUntil && Date.now() < st.inFlightUntil)
   }
 
+  // ---------- CD 到期补回 pending（2026-08-30，方向：冷却期有消息 → 到期自动回一条） ----------
+  // 冷却期消息 feed 时由 index 调 notePending 记下"冷却期最后一条消息"；冷却到期后（周期检查）若
+  // 无人发言触发正常回复，则由补回路径把这条消息作为回应对象自动回一句（不等新消息）。
+  // 正常触发路径（冷却到期后第一条消息触发回复）会 clearPending——回复已覆盖冷却期消息，无需补回。
+
+  /** 记录冷却期消息（覆盖写：只留冷却期最后一条，供到期补回） */
+  function notePending(qqKey, user, text, isAt = false) {
+    const now = Date.now()
+    let st = states.get(qqKey)
+    if (!st) { st = { energy: opts.range[0], lastTick: now, history: [] }; states.set(qqKey, st) }
+    st.pending = { user: String(user ?? '?'), text: String(text ?? ''), isAt: !!isAt }
+  }
+
+  /** 是否冷却期累积过消息（待补回） */
+  function hasPending(qqKey) {
+    const st = states.get(qqKey)
+    return !!(st && st.pending && st.pending.text)
+  }
+
+  /** 清空补回标记（正常触发/补回触发/冷却重置时调用） */
+  function clearPending(qqKey) {
+    const st = states.get(qqKey)
+    if (st) st.pending = undefined
+  }
+
+  /** 冷却期最后一条消息（补回回复的回应对象） */
+  function pendingInfo(qqKey) {
+    const st = states.get(qqKey)
+    return (st && st.pending) || null
+  }
+
+  /** 所有有待补回消息的群（周期检查用） */
+  function pendingKeys() {
+    const out = []
+    for (const [k, st] of states) if (st.pending && st.pending.text) out.push(k)
+    return out
+  }
+
   /** 取某群最近聊天记录（供 prompt 上下文）——发言者经 resolveName 解析为可读昵称；bot 自己标为 botName
    *  @param {boolean} [omitLast] 若 true，跳过最新一条（调用方刚经 feed 写入的"当前待回应消息"，
    *        避免它与 index 单独传入的 user message 重复出现 → 模型不会对错消息/接旧话）。
@@ -260,5 +300,5 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     states.clear()
   }
 
-  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, cooldownRemainingMs, lastBotReply, markInFlight, clearInFlight, inFlight }
+  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, cooldownRemainingMs, lastBotReply, markInFlight, clearInFlight, inFlight, notePending, hasPending, clearPending, pendingInfo, pendingKeys }
 }

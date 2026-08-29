@@ -441,6 +441,8 @@ export function apply(ctx, rawConfig = {}) {
         }
         energy.feed(qqKey, String(msg.user_id ?? '?'), text,
           friends.friendEnergyCost(String(msg.user_id ?? '')) || (gcfg.energy.msgCost ?? 10))
+        // 🔒 CD 到期补回（2026-08-30）：冷却期消息记 pending（最后一条），到期自动回一条
+        energy.notePending(qqKey, String(msg.user_id ?? '?'), text, isAt)
         return
       }
 
@@ -603,6 +605,8 @@ export function apply(ctx, rawConfig = {}) {
       if (isGroup && gcfg.energy?.enabled) {
         if (!discussion.isActive(qqKey)) energy.reset(qqKey)
         energy.markInFlight(qqKey)
+        // 🔒 CD 到期补回（2026-08-30）：正常触发已覆盖冷却期消息 → 清 pending，避免"正常回复+补回"双发
+        energy.clearPending(qqKey)
       }
       // 机器人发言：群聊标记友好度结算点（等后5句到齐后结算）
       if (isGroup) {
@@ -619,6 +623,69 @@ export function apply(ctx, rawConfig = {}) {
       log('warn', '[qq-bridge] prompt failed: %s', err.message)
       await bot.sendText(target, `⚠️ 出错了：${err.message}`).catch(() => {})
     }
+  }
+
+  // ---------- CD 到期补回回复（2026-08-30） ----------
+  // 场景：冷却期内累积了消息（notePending），冷却到期后无人发言触发正常回复 → 周期检查调用本函数
+  // 自动回一条（回应对象=冷却期最后一条消息）。prompt 组装为精简版（与 onQqMessage 的完整组装
+  // 保持同构：人设/上下文/规则/用户标注；无图片与插件钩子——补回场景没有新图片）。
+  // 互斥：调用前周期检查已保证 !inCooldown && !inFlight；本函数 markInFlight 与消息触发共用标记，
+  // 补回在途期间窗口期消息只缓冲不触发 → 不可能与消息触发双发。
+  async function replyFromCooldown(qqKey) {
+    if (config.muted) return   // 禁言期间不补回
+    const gcfg = groups.get(qqKey)
+    if (!gcfg?.energy?.enabled) return
+    const pend = energy.pendingInfo(qqKey)
+    if (!pend) return
+    if (energy.inCooldown(qqKey) || energy.inFlight(qqKey)) return   // 兜底互斥（周期检查已查，双保险）
+    energy.clearPending(qqKey)                                        // 防重入：只补回一次
+    const groupId = Number(String(qqKey).replace(/[^0-9]/g, '')) || 0
+    const target = { message_type: 'group', group_id: groupId, user_id: Number(pend.user) || 0 }
+    const sessionId = await sessions.ensure(qqKey, gcfg.workdir)
+    // —— prompt 组装（与 onQqMessage 群聊分支同构，见下注释）——
+    const content = []
+    const persona = buildPersonaPrompt(gcfg)
+    if (persona) content.push({ type: 'text', text: persona })
+    if (config.memoryEnabled) {
+      content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
+      const gctx = energy.getContext(qqKey, true)   // omitLast：冷却期最后一条由下面用户标注单独给出
+      if (gctx) content.push({ type: 'text', text: gctx })
+    } else {
+      const mctx = members.buildContext(qqKey, selfId)
+      if (mctx) content.push({ type: 'text', text: mctx })
+      const gctx = energy.getContext(qqKey, true)
+      if (gctx) content.push({ type: 'text', text: gctx })
+      const fctx = friends.buildContext(qqKey, selfId, pend.user)
+      if (fctx) content.push({ type: 'text', text: fctx })
+    }
+    const dctx = discussion.getContext(qqKey)
+    if (dctx) content.push({ type: 'text', text: dctx })
+    content.push({ type: 'text', text: subjectivity.ruleText() })
+    if (config.sendImage?.assetDir && config.sendImage?.hint) {
+      content.push({ type: 'text', text: config.sendImage.hint })
+    }
+    const rp = config.roleplay
+    if (rp?.enabled && rp?.mode === 'inner_os' && rp?.innerOsMarker) content.push({ type: 'text', text: rp.innerOsMarker })
+    else if (rp?.enabled && rp?.mode === 'no_inner_os' && rp?.noInnerOsMarker) content.push({ type: 'text', text: rp.noInnerOsMarker })
+    const scopeNote = gcfg.allowOutside
+      ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
+      : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
+    content.push({ type: 'text', text: scopeNote })
+    const pendAllowWork = !!config.workUsers?.length && config.workUsers.includes(String(pend.user ?? ''))
+    if (!pendAllowWork) {
+      content.push({ type: 'text', text: `（安全约束：你仅作为${config.botName || '我'}聊天。禁止写入、执行本机文件；只允许读取本目录下的 chatlog.md、profiles.md（记忆文件）和提示中给出的图片路径；除联网搜索和看图外，禁止调用其他工具。）` })
+    }
+    // 用户标注：回应对象=冷却期最后一条消息（上文已给冷却期全部历史，勿复述）
+    const speaker = members.nameOf(qqKey, pend.user)
+    const atMark = pend.isAt ? '（他@了你）' : '（未@你，不一定是跟你说的）'
+    const lastBot = energy.lastBotReply(qqKey)
+    const prevMark = lastBot ? `（你上一条刚回复：${lastBot}）` : ''
+    content.push({ type: 'text', text: `[${speaker} 说：${pend.text || '（无文字）'}]（冷却期收到的消息，挑合适的自然接一句）${atMark}${prevMark}` })
+    // 入队 + 在途标记（与正常触发同款防连发逻辑；能量在非讨论时回正）
+    await promptQueue(sessionId, content, target, `冷却补回:${(pend.text || '').slice(0, 20)}`)
+    if (!discussion.isActive(qqKey)) energy.reset(qqKey)
+    energy.markInFlight(qqKey)
+    energy.clearPending(qqKey)
   }
 
   // ---------- DSH → QQ ----------
@@ -711,6 +778,19 @@ export function apply(ctx, rawConfig = {}) {
     const dStats = discussion.stats?.()
     for (const gqk of dStats?.activeGroups || []) {
       discussion.checkExit(gqk, discussion.recentSpeakers(gqk))
+    }
+    // 🔒 CD 到期补回（2026-08-30）：冷却期内有消息 → 冷却到期自动回一条（不等新消息）。
+    //   互斥：inCooldown||inFlight 跳过；触发前先 clearPending 防重入；补回发起走 replyFromCooldown
+    //   （内部 markInFlight，与消息触发共用"在途"标记 → 不可能双发）。
+    if (config.energy?.replyAfterCooldown !== false) {
+      for (const gqk of energy.pendingKeys()) {
+        if (energy.inCooldown(gqk) || energy.inFlight(gqk)) continue
+        const pend = energy.pendingInfo(gqk)
+        if (!pend) continue
+        energy.clearPending(gqk)
+        log('info', '[qq-bridge] 群 %s 冷却到期补回（%s: %s）', gqk, pend.user, (pend.text || '').slice(0, 30))
+        void replyFromCooldown(gqk).catch((err) => log('warn', '[qq-bridge] 冷却补回失败 %s: %s', gqk, err?.message))
+      }
     }
   }, SOLO_CHECK_INTERVAL_MS)
 
