@@ -122,7 +122,10 @@ export function createReplyBuffer({ sendText, maxChunkLength = 3500, forceFlushM
         if (!buf) return
         const text = (event.data.message?.content ?? [])
           .filter((b) => b.type === 'text').map((b) => b.text).join('').trim()
-        if (text) buf.steps.push(text)
+        // 🔒 2026-08-30 修复"一条回复重复 N 遍"：同一 turn 出现多个含 text 的 assistant/message
+        //    = 模型在 agent 多步循环里重试/重写（尤其联网搜索后：搜索→答 v1→又调工具→答 v2/v3），
+        //    只保留最后一个（最终答案），丢弃中间版本。正常回复为单 text step，不受影响。
+        if (text) buf.steps = [text]
         buf.chunks = []
         buf.lastFlush = Date.now()
         break
