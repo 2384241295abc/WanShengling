@@ -780,15 +780,13 @@ export function apply(ctx, rawConfig = {}) {
       discussion.checkExit(gqk, discussion.recentSpeakers(gqk))
     }
     // 🔒 CD 到期补回（2026-08-30）：冷却期内有消息 → 冷却到期自动回一条（不等新消息）。
-    //   互斥：inCooldown||inFlight 跳过；触发前先 clearPending 防重入；补回发起走 replyFromCooldown
-    //   （内部 markInFlight，与消息触发共用"在途"标记 → 不可能双发）。
+    //   互斥：inCooldown||inFlight 跳过；读取/清空/发送统一在 replyFromCooldown 内完成——
+    //   interval 只判触发条件（hasPending），**不能先 clearPending**：否则 replyFromCooldown
+    //   内部第一步 pendingInfo 读到空会直接 return，补回永不生效（2026-08-30 修复的衔接 bug）。
     if (config.energy?.replyAfterCooldown !== false) {
       for (const gqk of energy.pendingKeys()) {
         if (energy.inCooldown(gqk) || energy.inFlight(gqk)) continue
-        const pend = energy.pendingInfo(gqk)
-        if (!pend) continue
-        energy.clearPending(gqk)
-        log('info', '[qq-bridge] 群 %s 冷却到期补回（%s: %s）', gqk, pend.user, (pend.text || '').slice(0, 30))
+        if (!energy.hasPending(gqk)) continue
         void replyFromCooldown(gqk).catch((err) => log('warn', '[qq-bridge] 冷却补回失败 %s: %s', gqk, err?.message))
       }
     }
