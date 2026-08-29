@@ -70,7 +70,7 @@ export const DEFAULTS = {
   },
 
   // 角色扮演思考模式（README: deepseek_v4_roleplay_instruct——独立标记块，放 user 消息附近注入，非 persona）
-  // 仅影响 <think> 思考过程，不影响回复文本（回复仍守人设铁律：30字/禁括号）
+  // 仅影响 <think> 思考过程，不影响回复文本（回复仍守人设铁律：简短/禁括号）
   roleplay: {
     enabled: false,   // 是否注入角色沉浸标记（默认关，开启后思考带括号内心独白）
     mode: 'inner_os', // 'inner_os'=角色沉浸（思考带括号独白） | 'no_inner_os'=纯分析（思考无独白） | 'default'=不加

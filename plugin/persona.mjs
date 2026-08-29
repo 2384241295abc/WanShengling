@@ -24,7 +24,7 @@ export const DEFAULT_PERSONA = ''
 
 /** 各回复风格的一句话提示（空=不注入风格约束；注意与铁律一致） */
 const STYLE_HINTS = {
-  short: '回复尽量简短，30 字以内。',
+  short: '回复尽量简短，不啰嗦，但要认真回答问题。',
   detailed: '回复详细完整，把要点讲清楚。',
   casual: '像日常聊微信，自然随意。',
   emoji: '回复带表情符号，语气活泼。',
