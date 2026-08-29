@@ -191,6 +191,19 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     }
   }
 
+  /** 最近一条机器人自己的回复文本（供当前消息标注承接点；无则空串）。
+   *  history 里倒序找最近一条 self 消息——即使最新几条是用户消息（feed 写入），
+   *  也能定位到 bot 上次说了什么，帮模型判断本条消息是否接着那句聊的。 */
+  function lastBotReply(qqKey) {
+    const st = states.get(qqKey)
+    if (!st || !st.history.length) return ''
+    for (let i = st.history.length - 1; i >= 0; i--) {
+      const m = st.history[i]
+      if (m.user === 'self' && m.text) return m.text
+    }
+    return ''
+  }
+
   /** 当前能量值（供可视化/调试） */
   function getEnergy(qqKey) {
     const st = states.get(qqKey)
@@ -218,5 +231,5 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     states.clear()
   }
 
-  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, cooldownRemainingMs }
+  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, cooldownRemainingMs, lastBotReply }
 }

@@ -517,6 +517,11 @@ export function apply(ctx, rawConfig = {}) {
         if (config.memoryEnabled) {
           // 文件记忆模式：固定指令，让模型读取 chatlog.md + profiles.md（不再注入滚动上下文）
           content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
+          // 🔒 兜底滚动上下文（2026-08-30 修复"回复不看前后文"）：flash 模型经常跳过读文件
+          //    （实测 turn 0 次工具调用、仅 890 tokens 直接回复 → 推荐话题答非所问），
+          //    即使不读 chatlog.md 也有最近 contextWindow 条可接话；读了文件则互为补充。
+          const gctx = energy.getContext(qqKey, fedCurrentMsg)
+          if (gctx) content.push({ type: 'text', text: gctx })
         } else {
           // 兼容旧模式：注入成员认知 + 能量滚动上下文
           const mctx = members.buildContext(qqKey, selfId)
@@ -574,7 +579,11 @@ export function apply(ctx, rawConfig = {}) {
               .filter(Boolean)
           : []
         const atMark2 = atOthers.length ? `（还@了：${atOthers.join('、')}）` : ''
-        content.push({ type: 'text', text: `[${speaker} 说：${text || '（无文字）'}]${atMark}${atMark2}` })
+        // 承接点标注（方案 C，2026-08-30）：附上一条 bot 回复，帮模型判断本条是否接着那句聊的
+        //（修复"还有其他的吗"接回旧话题答非所问——话题转折依赖显式承接，不靠模型自猜）
+        const lastBot = energy.lastBotReply(qqKey)
+        const prevMark = lastBot ? `（你上一条刚回复：${lastBot}）` : ''
+        content.push({ type: 'text', text: `[${speaker} 说：${text || '（无文字）'}]${atMark}${atMark2}${prevMark}` })
       } else {
         content.push({ type: 'text', text: text || '（对方@了你）' })
       }
