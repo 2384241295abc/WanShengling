@@ -40,7 +40,13 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(宿主)
 ```
 
 **模块清单**（`plugin/`）：
-`index.mjs`(宿主) · `config.mjs` · `persona.mjs` · `group-config.mjs` · `energy.mjs` · `friend.mjs` · `discussion.mjs` · `members.mjs` · `session.mjs` · `memory.mjs` · `vision.mjs`(图片库) · `registry.mjs`(插件宿主) · `reply-buffer.mjs` · `handlers.mjs` · `onebot-client.mjs` · `features/vision.mjs`(识图插件) · `features/commands.mjs`(指令插件)
+`index.mjs`(宿主) · `config.mjs` · `persona.mjs` · `group-config.mjs` · `energy.mjs` · `friend.mjs` · `discussion.mjs` · `members.mjs` · `session.mjs` · `memory.mjs` · `vision.mjs`(图片库) · `segments.mjs`(消息段工具：转发/视频/语音预留) · `media-send.mjs`(媒体发送管线：发图/生图预留) · `send-image.mjs`(表情包库) · `registry.mjs`(插件宿主) · `reply-buffer.mjs` · `handlers.mjs` · `onebot-client.mjs`
+`features/`：`vision.mjs`(识图插件) · `commands.mjs`(指令插件) · `forward.mjs`(转发记录读取，🔒预留) · `video.mjs`(视频提取，🔒预留)
+
+**🔒 预留功能接口**（2026-08-30，模块化隔离，接入无需改主流程）：
+- **生图**：模型回复带 `[生图:提示词]` 标记 → `media-send.mjs` 管线处理。接入：实现 `imageGen = { generate(prompt) → {path}|null }` 注入 `index.mjs` 的 `mediaSender` 即可
+- **转发聊天记录读取**：`features/forward.mjs` 骨架已挂载。接入：填 `onMessage`（`segments.mjs` 已提供 `downloadForwardMessage`/`forwardToText`）
+- **视频提取**：`features/video.mjs` 骨架已挂载。接入：填 `onMessage`（`segments.mjs` 已提供 `downloadVideo`，`extractAudio`/`extractVideoFrames` 为 ffmpeg 预留）
 
 详细机制见仓库内 **[REPLY-MECHANISM.md](REPLY-MECHANISM.md)**。
 

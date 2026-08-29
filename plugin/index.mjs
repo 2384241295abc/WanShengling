@@ -36,8 +36,11 @@ import { appendChat, memoryInstruction, chatLine } from './memory.mjs'
 import { createFeatureRegistry } from './registry.mjs'
 import { createVisionFeature } from './features/vision.mjs'
 import { createCommandsFeature } from './features/commands.mjs'
+import { createForwardFeature } from './features/forward.mjs'
+import { createVideoFeature } from './features/video.mjs'
 import { createSubjectivity } from './subjectivity.mjs'
-import { createSendImage, parseImageMark } from './send-image.mjs'
+import { createSendImage } from './send-image.mjs'
+import { createMediaSender } from './media-send.mjs'
 
 export const name = 'qq-bridge'
 export const inject = ['apiProxy']
@@ -123,6 +126,10 @@ export function apply(ctx, rawConfig = {}) {
   const visionFeature = createVisionFeature({ bot, config, groups, energy, friends, members, sessions, log })
   features.register(visionFeature)
   features.register(createCommandsFeature({ bot, groups, members, friends, energy, discussion, config, log }))
+  // 🔒 预留功能骨架（2026-08-30，模块化隔离）：转发记录读取 / 视频提取——
+  //    当前只检测不处理（保持现状），实现步骤见各文件头注释，接入无需改主流程
+  features.register(createForwardFeature({ bot, groups, config, log }))
+  features.register(createVideoFeature({ bot, groups, config, log }))
 
   // 消息对象主体性规则（基础回复规则，独立于人设）：回复前核查对象主体，推测不出先询问；
   // 询问后 askWindowMs 内收到回应 → 追加对象主体明确的回复。
@@ -140,36 +147,23 @@ export function apply(ctx, rawConfig = {}) {
     log,
   })
 
+  // 🔒 媒体发送管线（2026-08-30 模块化，media-send.mjs）：发送钩子统一走管线——
+  //    [发图:] 走本地库（sendImage）；[生图:] 走 imageGen provider（预留，未配置时静默回退纯文本）。
+  //    后续接入生图：实现 { generate(prompt) → {path}|null } 注入 imageGen 即可，无需改本文件。
+  const mediaSender = createMediaSender({
+    sendText: (target, text) => bot.sendText(target, text),
+    sendImage: (target, filePath) => bot.sendImage(target, filePath),
+    sendTextAndImage: (target, text, filePath) => bot.sendTextAndImage(target, text, filePath),
+    localAssets: config.sendImage?.assetDir ? sendImage : null,
+    imageGen: null,   // 🔒 生图 provider 预留位（见 media-send.mjs 接口注释）
+    log,
+  })
+
   const reply = createReplyBuffer({
-    // 发送钩子：解析 [发图:xxx] 标记 → 改发图片；**始终返回清理后的文本**（回灌用，不含标记）
-    // 注：bot.sendText/sendImage 的返回是 message_id（数字），此处不作为回灌文本。
-    sendText: async (target, text) => {
-      // 发图功能未配置（assetDir 空）→ 原样发文本
-      if (!sendImage.assetDir()) {
-        await bot.sendText(target, text).catch(() => {})
-        return text
-      }
-      const mark = parseImageMark(text)
-      if (!mark) {
-        await bot.sendText(target, text).catch(() => {})
-        return text
-      }
-      // 有标记：先匹配表情包库
-      const imgPath = await sendImage.resolveAsset(mark.keyword).catch(() => null)
-      if (!imgPath) {
-        // 库中无此图：发文字但去掉无效标记（避免暴露 [发图:] 语法）
-        const clean = mark.text || text
-        await bot.sendText(target, clean).catch(() => {})
-        return clean
-      }
-      // 发图：有前置文字 → 图文一条；只有标记 → 只发图
-      if (mark.text) {
-        await bot.sendTextAndImage(target, mark.text, imgPath).catch(() => bot.sendText(target, mark.text))
-      } else {
-        await bot.sendImage(target, imgPath).catch(() => {})
-      }
-      return mark.text   // 回灌用清理后文本（不含标记）
-    },
+    // 发送钩子：统一走媒体发送管线（media-send.mjs，解析 [发图:]/[生图:] 标记改发图片）；
+    // **始终返回清理后的文本**（回灌用，不含标记）。注：bot.sendText/sendImage 的返回是
+    // message_id（数字），不作为回灌文本。
+    sendText: (target, text) => mediaSender.send(target, text),
     maxChunkLength: config.maxChunkLength,
     forceFlushMs: config.forceFlushMs,
     log,
@@ -439,11 +433,19 @@ export function apply(ctx, rawConfig = {}) {
         if (isAt && !text) {
           return   // 裸 @（只@无文字）：冷却期内完全忽略，不缓冲不计数
         }
-        energy.feed(qqKey, String(msg.user_id ?? '?'), text,
-          friends.friendEnergyCost(String(msg.user_id ?? '')) || (gcfg.energy.msgCost ?? 10))
-        // 🔒 CD 到期补回（2026-08-30）：冷却期消息记 pending（最后一条），到期自动回一条
-        energy.notePending(qqKey, String(msg.user_id ?? '?'), text, isAt)
-        return
+        // 🔒 追问澄清（2026-08-30 修复）：askFollowUp 已在上面 consume（窗口消费不可逆）。
+        //    冷却中收到澄清回应 → 追问是"上一条询问的延续"而非新触发，force 打破冷却走下方
+        //    askFollowUp 分支正常发起；inFlight 期窗口未开（onBotReply 在回复发出后才开窗），
+        //    不可能命中。其余冷却期消息照常缓冲（feed + notePending 到期补回）。
+        if (askFollowUp) {
+          energy.force(qqKey)
+        } else {
+          energy.feed(qqKey, String(msg.user_id ?? '?'), text,
+            friends.friendEnergyCost(String(msg.user_id ?? '')) || (gcfg.energy.msgCost ?? 10))
+          // 🔒 CD 到期补回（2026-08-30）：冷却期消息记 pending（最后一条），到期自动回一条
+          energy.notePending(qqKey, String(msg.user_id ?? '?'), text, isAt)
+          return
+        }
       }
 
       // 被 @ 时强制触发（点名就得回）并进入 solo（记录发起人），否则正常 feed；
@@ -515,83 +517,29 @@ export function apply(ctx, rawConfig = {}) {
         await bot.sendText(target, ackText(gcfg)).catch(() => {})
       }
 
-      // 人设注入 + 群聊上下文 + 权限约束 → prompt 内容块
-      const persona = buildPersonaPrompt(gcfg)
-      const content = []
-      if (persona) content.push({ type: 'text', text: persona })
-      if (isGroup) {
-        if (config.memoryEnabled) {
-          // 文件记忆模式：固定指令，让模型读取 chatlog.md + profiles.md（不再注入滚动上下文）
-          content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
-          // 🔒 兜底滚动上下文（2026-08-30 修复"回复不看前后文"）：flash 模型经常跳过读文件
-          //    （实测 turn 0 次工具调用、仅 890 tokens 直接回复 → 推荐话题答非所问），
-          //    即使不读 chatlog.md 也有最近 contextWindow 条可接话；读了文件则互为补充。
-          const gctx = energy.getContext(qqKey, fedCurrentMsg)
-          if (gctx) content.push({ type: 'text', text: gctx })
-        } else {
-          // 兼容旧模式：注入成员认知 + 能量滚动上下文
-          const mctx = members.buildContext(qqKey, selfId)
-          if (mctx) content.push({ type: 'text', text: mctx })
-          const gctx = energy.getContext(qqKey, fedCurrentMsg)
-          if (gctx) content.push({ type: 'text', text: gctx })
-          const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
-          if (fctx) content.push({ type: 'text', text: fctx })
-        }
-        // 讨论环境提示：让机器人发言更符合"多人讨论"氛围
-        const dctx = discussion.getContext(qqKey)
-        if (dctx) content.push({ type: 'text', text: dctx })
-        // 主体性规则块：回复前先判断对象主体（基础回复规则，独立于人设）
-        content.push({ type: 'text', text: subjectivity.ruleText() })
-        // 追问窗口命中：本次是对象澄清的追加回复
-        if (askFollowUp) content.push({ type: 'text', text: subjectivity.followUpHint() })
-        // 发图能力提示：配置了表情包库才注入（人设语境，非硬约束）
-        if (config.sendImage?.assetDir && config.sendImage?.hint) {
-          content.push({ type: 'text', text: config.sendImage.hint })
-        }
+      // 人设注入 + 群聊上下文 + 权限约束 → prompt 内容块（公共组装 buildPromptBlocks，含用户标注）
+      let content
+      if (!isGroup) {
+        // 私聊：只注入人设+友好度认知，用户标注为原文
+        content = buildPromptBlocks({
+          gcfg, qqKey, userId: String(msg.user_id ?? '?'), text,
+          isGroup: false, allowWork,
+        })
       } else {
-        // 私聊：保持友好度认知（无文件记忆）
-        const fctx = friends.buildContext(qqKey, selfId, String(msg.user_id ?? ''))
-        if (fctx) content.push({ type: 'text', text: fctx })
-      }
-      // 角色扮演思考模式标记（README: deepseek_v4_roleplay_instruct——独立块放 user 消息附近，非 persona）
-      // 仅影响 <think> 思考风格；回复文本仍守人设铁律。mode: inner_os=角色沉浸 / no_inner_os=纯分析 / default=不加
-      const rp = config.roleplay
-      if (rp?.enabled && rp?.mode === 'inner_os' && rp?.innerOsMarker) {
-        content.push({ type: 'text', text: rp.innerOsMarker })
-      } else if (rp?.enabled && rp?.mode === 'no_inner_os' && rp?.noInnerOsMarker) {
-        content.push({ type: 'text', text: rp.noInnerOsMarker })
-      }
-      const scopeNote = gcfg.allowOutside
-        ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
-        : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
-      content.push({ type: 'text', text: scopeNote })
-      // 权限收束：非白名单用户只聊天，禁止触碰本机文件（记忆文件/联网搜索/视觉看图除外——回复需要读记忆与查词看图）
-      if (!allowWork) {
-        content.push({ type: 'text', text: `（安全约束：你仅作为${config.botName || '我'}聊天。禁止写入、执行本机文件；只允许读取本目录下的 chatlog.md、profiles.md（记忆文件）和提示中给出的图片路径；除联网搜索和看图外，禁止调用其他工具。）` })
-      }
-      // 插件 prompt 钩子（识图提示等）
-      const pluginBlocks = await features.runOnPrompt({ sessionId, qqKey, gcfg, imageSegs, pendingImagePaths, text })
-      content.push(...pluginBlocks)
-      // 用户消息放最后（模型注意力集中在用户的话上；纯 @ 消息给默认文本）
-      // 主体标注：群聊时标明"谁说的、是否@了你、@了谁"——模型据此判断完整行为主体（谁@谁、指令对象是谁）
-      if (isGroup) {
-        const speaker = members.nameOf(qqKey, String(msg.user_id ?? '?'))
-        const atMark = isAt ? '（他@了你）' : '（未@你，不一定是跟你说的）'
-        // 解析本条消息 @ 了谁（除自己外的 at 段），标注被@对象 → 模型能识别"让我跟谁聊"
+        // 群聊：解析本条 @ 了谁（除自己外），标注被@对象 → 模型能识别"让我跟谁聊"
         const atOthers = Array.isArray(msg.message)
           ? msg.message
               .filter((s) => s?.type === 'at' && String(s.data?.qq) !== String(selfId))
               .map((s) => members.nameOf(qqKey, String(s.data?.qq)))
               .filter(Boolean)
           : []
-        const atMark2 = atOthers.length ? `（还@了：${atOthers.join('、')}）` : ''
-        // 承接点标注（方案 C，2026-08-30）：附上一条 bot 回复，帮模型判断本条是否接着那句聊的
-        //（修复"还有其他的吗"接回旧话题答非所问——话题转折依赖显式承接，不靠模型自猜）
-        const lastBot = energy.lastBotReply(qqKey)
-        const prevMark = lastBot ? `（你上一条刚回复：${lastBot}）` : ''
-        content.push({ type: 'text', text: `[${speaker} 说：${text || '（无文字）'}]${atMark}${atMark2}${prevMark}` })
-      } else {
-        content.push({ type: 'text', text: text || '（对方@了你）' })
+        content = buildPromptBlocks({
+          gcfg, qqKey, userId: String(msg.user_id ?? '?'), text,
+          isGroup: true, isAt, allowWork, fedCurrentMsg, askFollowUp, atOthers,
+        })
+        // 插件 prompt 钩子（识图提示等）
+        const pluginBlocks = await features.runOnPrompt({ sessionId, qqKey, gcfg, imageSegs, pendingImagePaths, text })
+        content.push(...pluginBlocks)
       }
 
       // 异步入队（accepted 即返回；回复走事件流）
@@ -625,6 +573,88 @@ export function apply(ctx, rawConfig = {}) {
     }
   }
 
+  // ---------- prompt 组装公共函数（2026-08-30 模块化：onQqMessage 与 CD 补回共用，防两处漂移） ----------
+  /**
+   * 组装 prompt 内容块：人设 + 群聊/私聊上下文 + 讨论/主体性/发图提示 + 角色沉浸 + scope + 安全约束 + 用户标注。
+   * 插件钩子（features.runOnPrompt）与图片注册由调用方各自处理（CD 补回无图片/插件钩子）。
+   * @param {object} p
+   * @param {object} p.gcfg       群配置
+   * @param {string} p.qqKey      会话键（qq-group-<id> / qq-private-<id>）
+   * @param {string} p.userId     发送者 QQ 号
+   * @param {string} p.text       用户文本
+   * @param {boolean} p.isGroup   群聊（默认 true；false=私聊，只注入人设+友好度认知）
+   * @param {boolean} p.isAt      是否 @ 了机器人
+   * @param {boolean} p.allowWork 是否工作白名单（false 注入安全约束）
+   * @param {boolean} p.fedCurrentMsg 当前句是否已入 history（getContext omitLast，防重复）
+   * @param {boolean} p.askFollowUp 主体性追问命中（追加 followUpHint）
+   * @param {string[]} p.atOthers 本条 @ 的其他人的昵称（群聊标注）
+   * @param {string} p.extraNote  附加说明（如 CD 补回"冷却期收到的消息"）
+   */
+  function buildPromptBlocks({ gcfg, qqKey, userId, text, isGroup = true, isAt = false, allowWork = false, fedCurrentMsg = false, askFollowUp = false, atOthers = [], extraNote = '' } = {}) {
+    const content = []
+    const persona = buildPersonaPrompt(gcfg)
+    if (persona) content.push({ type: 'text', text: persona })
+    if (isGroup) {
+      if (config.memoryEnabled) {
+        // 文件记忆模式：固定指令，让模型读取 chatlog.md + profiles.md（不再注入滚动上下文）
+        content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
+        // 🔒 兜底滚动上下文（2026-08-30 修复"回复不看前后文"）：flash 模型经常跳过读文件，
+        //    即使不读 chatlog.md 也有最近 contextWindow 条可接话；读了文件则互为补充。
+        const gctx = energy.getContext(qqKey, fedCurrentMsg)
+        if (gctx) content.push({ type: 'text', text: gctx })
+      } else {
+        // 兼容旧模式：注入成员认知 + 能量滚动上下文
+        const mctx = members.buildContext(qqKey, selfId)
+        if (mctx) content.push({ type: 'text', text: mctx })
+        const gctx = energy.getContext(qqKey, fedCurrentMsg)
+        if (gctx) content.push({ type: 'text', text: gctx })
+        const fctx = friends.buildContext(qqKey, selfId, userId)
+        if (fctx) content.push({ type: 'text', text: fctx })
+      }
+      // 讨论环境提示：让机器人发言更符合"多人讨论"氛围
+      const dctx = discussion.getContext(qqKey)
+      if (dctx) content.push({ type: 'text', text: dctx })
+      // 主体性规则块：回复前先判断对象主体（基础回复规则，独立于人设）
+      content.push({ type: 'text', text: subjectivity.ruleText() })
+      // 追问窗口命中：本次是对象澄清的追加回复
+      if (askFollowUp) content.push({ type: 'text', text: subjectivity.followUpHint() })
+      // 发图能力提示：配置了表情包库才注入（人设语境，非硬约束）
+      if (config.sendImage?.assetDir && config.sendImage?.hint) {
+        content.push({ type: 'text', text: config.sendImage.hint })
+      }
+    } else {
+      // 私聊：保持友好度认知（无文件记忆）
+      const fctx = friends.buildContext(qqKey, selfId, userId)
+      if (fctx) content.push({ type: 'text', text: fctx })
+    }
+    // 角色扮演思考模式标记（README: deepseek_v4_roleplay_instruct——独立块，非 persona）
+    const rp = config.roleplay
+    if (rp?.enabled && rp?.mode === 'inner_os' && rp?.innerOsMarker) content.push({ type: 'text', text: rp.innerOsMarker })
+    else if (rp?.enabled && rp?.mode === 'no_inner_os' && rp?.noInnerOsMarker) content.push({ type: 'text', text: rp.noInnerOsMarker })
+    const scopeNote = gcfg.allowOutside
+      ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
+      : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
+    content.push({ type: 'text', text: scopeNote })
+    // 权限收束：非白名单用户只聊天，禁止触碰本机文件（记忆文件/联网搜索/视觉看图除外——回复需要读记忆与查词看图）
+    if (!allowWork) {
+      content.push({ type: 'text', text: `（安全约束：你仅作为${config.botName || '我'}聊天。禁止写入、执行本机文件；只允许读取本目录下的 chatlog.md、profiles.md（记忆文件）和提示中给出的图片路径；除联网搜索和看图外，禁止调用其他工具。）` })
+    }
+    // 用户消息放最后（模型注意力集中在用户的话上；纯 @ 消息给默认文本）
+    if (isGroup) {
+      const speaker = members.nameOf(qqKey, userId)
+      const atMark = isAt ? '（他@了你）' : '（未@你，不一定是跟你说的）'
+      const atMark2 = atOthers.length ? `（还@了：${atOthers.join('、')}）` : ''
+      // 承接点标注（方案 C，2026-08-30）：附上一条 bot 回复，帮模型判断本条是否接着那句聊的
+      const lastBot = energy.lastBotReply(qqKey)
+      const prevMark = lastBot ? `（你上一条刚回复：${lastBot}）` : ''
+      const extra = extraNote ? `（${extraNote}）` : ''
+      content.push({ type: 'text', text: `[${speaker} 说：${text || '（无文字）'}]${atMark}${atMark2}${prevMark}${extra}` })
+    } else {
+      content.push({ type: 'text', text: text || '（对方@了你）' })
+    }
+    return content
+  }
+
   // ---------- CD 到期补回回复（2026-08-30） ----------
   // 场景：冷却期内累积了消息（notePending），冷却到期后无人发言触发正常回复 → 周期检查调用本函数
   // 自动回一条（回应对象=冷却期最后一条消息）。prompt 组装为精简版（与 onQqMessage 的完整组装
@@ -640,47 +670,16 @@ export function apply(ctx, rawConfig = {}) {
     if (energy.inCooldown(qqKey) || energy.inFlight(qqKey)) return   // 兜底互斥（周期检查已查，双保险）
     energy.clearPending(qqKey)                                        // 防重入：只补回一次
     const groupId = Number(String(qqKey).replace(/[^0-9]/g, '')) || 0
-    const target = { message_type: 'group', group_id: groupId, user_id: Number(pend.user) || 0 }
+    // 补回是"群里接一句"，无明确接收人 → 不带 user_id（send_group_msg 不需要，user_id:0 会污染 params）
+    const target = { message_type: 'group', group_id: groupId }
     const sessionId = await sessions.ensure(qqKey, gcfg.workdir)
-    // —— prompt 组装（与 onQqMessage 群聊分支同构，见下注释）——
-    const content = []
-    const persona = buildPersonaPrompt(gcfg)
-    if (persona) content.push({ type: 'text', text: persona })
-    if (config.memoryEnabled) {
-      content.push({ type: 'text', text: memoryInstruction(gcfg.workdir) })
-      const gctx = energy.getContext(qqKey, true)   // omitLast：冷却期最后一条由下面用户标注单独给出
-      if (gctx) content.push({ type: 'text', text: gctx })
-    } else {
-      const mctx = members.buildContext(qqKey, selfId)
-      if (mctx) content.push({ type: 'text', text: mctx })
-      const gctx = energy.getContext(qqKey, true)
-      if (gctx) content.push({ type: 'text', text: gctx })
-      const fctx = friends.buildContext(qqKey, selfId, pend.user)
-      if (fctx) content.push({ type: 'text', text: fctx })
-    }
-    const dctx = discussion.getContext(qqKey)
-    if (dctx) content.push({ type: 'text', text: dctx })
-    content.push({ type: 'text', text: subjectivity.ruleText() })
-    if (config.sendImage?.assetDir && config.sendImage?.hint) {
-      content.push({ type: 'text', text: config.sendImage.hint })
-    }
-    const rp = config.roleplay
-    if (rp?.enabled && rp?.mode === 'inner_os' && rp?.innerOsMarker) content.push({ type: 'text', text: rp.innerOsMarker })
-    else if (rp?.enabled && rp?.mode === 'no_inner_os' && rp?.noInnerOsMarker) content.push({ type: 'text', text: rp.noInnerOsMarker })
-    const scopeNote = gcfg.allowOutside
-      ? `（注意：本会话工作目录为 ${gcfg.workdir}，你可以读取工作目录以外的文件，但写入仍以工作目录为准。）`
-      : `（注意：本会话工作目录为 ${gcfg.workdir}，你只能访问此目录内的文件，禁止读写目录外的任何文件。）`
-    content.push({ type: 'text', text: scopeNote })
+    // —— prompt 组装（公共函数 buildPromptBlocks；fedCurrentMsg=true：冷却期最后一条由用户标注单独给出）——
     const pendAllowWork = !!config.workUsers?.length && config.workUsers.includes(String(pend.user ?? ''))
-    if (!pendAllowWork) {
-      content.push({ type: 'text', text: `（安全约束：你仅作为${config.botName || '我'}聊天。禁止写入、执行本机文件；只允许读取本目录下的 chatlog.md、profiles.md（记忆文件）和提示中给出的图片路径；除联网搜索和看图外，禁止调用其他工具。）` })
-    }
-    // 用户标注：回应对象=冷却期最后一条消息（上文已给冷却期全部历史，勿复述）
-    const speaker = members.nameOf(qqKey, pend.user)
-    const atMark = pend.isAt ? '（他@了你）' : '（未@你，不一定是跟你说的）'
-    const lastBot = energy.lastBotReply(qqKey)
-    const prevMark = lastBot ? `（你上一条刚回复：${lastBot}）` : ''
-    content.push({ type: 'text', text: `[${speaker} 说：${pend.text || '（无文字）'}]（冷却期收到的消息，挑合适的自然接一句）${atMark}${prevMark}` })
+    const content = buildPromptBlocks({
+      gcfg, qqKey, userId: pend.user, text: pend.text || '',
+      isGroup: true, isAt: pend.isAt, allowWork: pendAllowWork, fedCurrentMsg: true,
+      extraNote: '冷却期收到的消息，挑合适的自然接一句',
+    })
     // 入队 + 在途标记（与正常触发同款防连发逻辑；能量在非讨论时回正）
     await promptQueue(sessionId, content, target, `冷却补回:${(pend.text || '').slice(0, 20)}`)
     if (!discussion.isActive(qqKey)) energy.reset(qqKey)
