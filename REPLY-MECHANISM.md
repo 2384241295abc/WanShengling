@@ -1,9 +1,16 @@
 # dsh-qq-bridge 回复机制详解
 
-> 本文档描述 dsh-qq-bridge 插件当前（v0.3.x）的完整回复机制：一条 QQ 消息进来后，
+> 本文档描述 dsh-qq-bridge 插件当前（**v0.4.8**）的完整回复机制：一条 QQ 消息进来后，
 > 从接收到回传的每一步逻辑、能量/冷却/solo/讨论四种节奏、以及后台状态查询方式。
 > 代码对应：`plugin/index.mjs`（主流程）、`energy.mjs`（能量/冷却）、`friend.mjs`（友好度/solo）、
 > `discussion.mjs`（讨论模式）、`reply-buffer.mjs`（回复缓冲）、`session.mjs`（会话管理）、`vision.mjs`（图片处理，对接 DSH 视觉插件）。
+
+> **2026-08-30 增补（v0.4.6→v0.4.8）**：
+> - prompt 组装抽为公共函数 `buildPromptBlocks`（index.mjs 内，群聊/私聊/CD 补回共用，防漂移）
+> - 发送管线抽为 `media-send.mjs`（[发图:] 本地库 / [生图:] provider 预留）；新增 `segments.mjs`（forward/视频段工具）
+> - reply-buffer：同回合多 text step **只保留最后一条**（防联网 agent 多步循环把一条回复重复 N 遍）
+> - 联网放开：安全约束明确"要查证/最新信息/陌生词先联网搜索再答"，禁止搪塞/字面瞎猜/反问"这是啥"（文件/执行权限不变）
+> - 预留功能：`features/forward.mjs`（转发记录读取）、`features/video.mjs`（视频提取）骨架已挂载（只检测不处理）
 
 ---
 
