@@ -63,8 +63,8 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(msg)
 | `decayPerMin` | `3` | 每分钟衰减（惰性：按距上次更新分钟数补算） |
 | `msgCost` | `10` | 每条普通消息扣能（挚友 17） |
 | `contextWindow` | `8` | 触发时携带的最近聊天记录条数 |
-| `cooldownMs` | `15000` | 回复后冷却时长 |
-| `inFlightTtlMs` | `180000` | 回复"在途"标记有效期（防连发，见下） |
+| `cooldownMs` | `15000` | 回复发出后忙期时长（冷却间隔） |
+| `inFlightTtlMs` | `180000` | 入队忙期上限：promptQueue 成功后同群不触发的时长（生成异常自然过期，不永久卡回复） |
 | `replyAfterCooldown` | `true` | CD 到期补回开关（见下） |
 
 ### 三种触发方式
@@ -73,39 +73,42 @@ QQ 消息 → NapCat(WS:3001) → onebot-client → onQqMessage(msg)
 |------|------|
 | **feed**（普通消息，非冷却期） | `能量 -= 成本(10/17)` → 返回 `能量 < 0`；未达标不回复 |
 | **force**（@ / solo 发起人 / 主体性追问） | 能量置 `-1`（必然 <0），点名必回 |
-| **冷却/在途缓冲**（冷却期或回复在途） | 只 feed 扣能+入历史+notePending，不触发（**@ 也不打破冷却**，用户铁律 2026-08-29 起） |
+| **忙期缓冲**（忙期=入队在途或发送后冷却，单窗口） | 只 feed 扣能+入历史+notePending，不触发（**@ 也不打破冷却**，用户铁律 2026-08-29 起） |
 
-### 回复冷却（核心节奏，2026-08-29 重构：无定时器、无补回竞态）
+### 回复忙期（核心节奏；2026-09-04 整合：原 cooldownUntil+inFlightUntil 双时间标记合一为 busyUntil 单窗口）
 
 ```
-回复真正发出后（onReply 回调）→ beginCooldown(15s)：只做间隔标记，不锁能量、无定时器
-  冷却期内（含 inFlight 在途期）：
-    - 所有消息（含 @）→ feed 扣能入历史 + notePending（记冷却期最后一条）→ 不触发
-    - 裸 @（无文字）→ 完全忽略（不缓冲不计数）
-  冷却到期：无定时器。回复由消息驱动——
-    - 活跃群：冷却期 feed 已把能量扣负 → 到期后第一条消息自然触发
-    - 冷群：靠衰减（每分钟 -3）低频触发，或走下方"CD 到期补回"
+回复真正发出后（onReply 回调）→ beginCooldown(15s)：busyUntil=now+15s（只做间隔标记，不锁能量、无定时器）
+入队成功后（promptQueue）→ markBusy：busyUntil=now+inFlightTtlMs(180s)——覆盖"生成中→发送完成"窗口
+  beginCooldown 与 markBusy 写同一 busyUntil：发送完成后被 beginCooldown 覆盖收敛为冷却时长
+忙期内（inCooldown=true）：
+  - 所有消息（含 @）→ feed 扣能入历史 + notePending（记忙期最后一条）→ 不触发
+  - 裸 @（无文字）→ 完全忽略（不缓冲不计数）
+忙期到期：无定时器。回复由消息驱动——
+  - 活跃群：忙期 feed 已把能量扣负 → 到期后第一条消息自然触发
+  - 冷群：靠衰减（每分钟 -3）低频触发，或走下方"CD 到期补回"
 ```
 
 ### CD 到期补回（2026-08-30 新增，`energy.replyAfterCooldown` 默认开）
 
 ```
-冷却期内有消息（notePending）→ 冷却到期后若无人发言触发正常回复：
-  10s 周期检查发现 pending && !inCooldown && !inFlight → 自动回一条（回应对象=冷却期最后一条消息）
-  互斥：触发前 clearPending 防重入；发起后 markInFlight 与消息触发共用"在途"标记 → 不可能双发
-  回复发出 → onReply 清标记 + 进新冷却（节奏不变）
-正常触发路径（到期后第一条消息触发回复）会 clearPending——回复已覆盖冷却期消息，不再补回
+忙期内有消息（notePending）→ 忙期到期后若无人发言触发正常回复：
+  10s 周期检查发现 pending && !inCooldown → 自动回一条（回应对象=忙期最后一条消息）
+  互斥：触发前 clearPending 防重入；发起后 markBusy 与消息触发共用忙期标记 → 不可能双发
+  回复发出 → onReply 进新忙期（节奏不变）
+正常触发路径（到期后第一条消息触发回复）会 clearPending——回复已覆盖忙期消息，不再补回
 ```
 
-### 防连发（2026-08-30，`inFlightTtlMs=180s`）
+### 防连发（2026-08-30 引入，2026-09-04 收敛为忙期单窗口）
 
 ```
 根因：冷却起点=回复发出后，但"模型生成完成→实际发送完成"存在窗口期，窗口内消息
   inCooldown=false 且能量未重置（继承触发前负值）→ 二次触发连发。
-修复：
-  - 入队成功后 markInFlight：窗口期消息经 inCooldown||inFlight 检查只缓冲不触发；
-    onReply 时 clearInFlight 转正式冷却。TTL 180s 惰性过期，防 onReply 异常永久卡回复。
-  - 入队成功后非讨论群立即 reset 能量：窗口期消息即使绕过标记一 feed 也为正。
+修复（单窗口语义，energy.mjs）：
+  - 入队成功后 markBusy（busyUntil=now+180s）：窗口期消息经 inCooldown 检查只缓冲不触发；
+    onReply 时 beginCooldown 覆盖为 now+15s（原 clearInFlight+beginCooldown 两步合一）。
+    TTL 惰性过期，防 onReply 异常永久卡回复。
+  - 入队成功后非讨论群立即 reset 能量：窗口期消息即使绕过忙期标记一 feed 也为正。
 ```
 
 > 原"CD 修复记录（2026-08-19）"的 `breakCooldown`/定时器补回/讨论 [30,60] 到期恢复等描述

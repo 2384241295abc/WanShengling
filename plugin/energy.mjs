@@ -36,8 +36,8 @@ export const DEFAULT_ENERGY = {
   soloIdleMs: 60000,         // solo 超时：发起人友好度超过该毫秒未上升则退出（solo 仅记录状态，节奏统一走冷却）
   maxSoloMs: 300000,         // solo 绝对上限：进入后超过该毫秒强制退出（兜底，防续期循环导致永不退出；2026-08-29 新增）
   cooldownMs: 15000,         // 回复冷却：回复发出后这些毫秒内消息不触发（用户要求 15s）
-  inFlightTtlMs: 180000,     // 回复"在途"标记有效期：入队后该毫秒内同群消息不触发（防连发，见 index.mjs）
-                             //   ——超过自动失效，防 onReply 异常导致该群永久卡回复
+  inFlightTtlMs: 180000,     // 入队忙期上限（原"在途"标记 TTL）：promptQueue 成功后该毫秒内同群
+                             //   消息不触发（防连发）；onReply 的 beginCooldown 会覆盖收敛为冷却时长。
   replyAfterCooldown: true,  // CD 到期补回：冷却期内有消息 → 冷却到期自动回一条（不等新消息）。
                              //   2026-08-30 恢复"补回"能力（8/29 曾因竞态删除），现以 inFlight 互斥安全实现
 }
@@ -128,63 +128,47 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     return st.energy < 0
   }
 
-  // ---------- 回复冷却(cooldown)状态机（2026-08-29 重构：只做间隔控制，无定时器/无补回/无 pending） ----------
+  // ---------- 回复忙期(busy)状态机（2026-09-04 整合：原 cooldownUntil + inFlightUntil 双时间标记合一） ----------
+  // 一个 busyUntil 时间戳覆盖该群"此刻不应自动触发"的两段窗口，杜绝双标记漂移/过期逻辑重复：
+  //   · 入队后（模型生成中）：index 调 markBusy → busyUntil = now + inFlightTtlMs（生成异常时
+  //     自然过期，不会永久卡回复；回复发出后 beginCooldown 会覆盖缩短）；
+  //   · 发送完成后：onReply → beginCooldown → busyUntil = now + cooldownMs（冷却间隔）。
+  // 检查一律走 inCooldown()（语义 = busy，含"在途"与"冷却"；旧 index 里 inCooldown||inFlight 已收敛）。
 
-  /** 回复发出后调用：进入冷却。冷却期内消息只累积（feed 扣能入历史），不触发；到期自然失效。 */
+  /** 回复发出后调用：进入冷却。冷却期内消息只累积（feed 扣能入历史），不触发；到期自然失效。
+   *  （同时覆盖清除入队期在途标记——同窗口，直接覆盖到 now+cooldownMs） */
   function beginCooldown(qqKey, cooldownMs) {
     const now = Date.now()
     let st = states.get(qqKey)
     if (!st) { st = { energy: opts.range[0], lastTick: now, history: [] }; states.set(qqKey, st) }
     st.lastReplyAt = now
-    st.cooldownUntil = now + (cooldownMs >= 0 ? cooldownMs : (opts.cooldownMs ?? 15000))
-    log('info', '[qq-bridge] 群 %s 进入回复冷却，cooldownUntil=%d', qqKey, st.cooldownUntil)
-    return st.cooldownUntil
+    st.busyUntil = now + (cooldownMs >= 0 ? cooldownMs : (opts.cooldownMs ?? 15000))
+    log('info', '[qq-bridge] 群 %s 进入回复忙期(冷却)，busyUntil=%d', qqKey, st.busyUntil)
+    return st.busyUntil
   }
 
-  /** 该群当前是否处于冷却期 */
-  function inCooldown(qqKey) {
-    const st = states.get(qqKey)
-    if (!st || st.cooldownUntil === undefined) return false
-    applyDecay(st)
-    return Date.now() < st.cooldownUntil
-  }
-
-  /** 冷却剩余毫秒（0 = 不在冷却；供 /能量 指令展示） */
-  function cooldownRemainingMs(qqKey) {
-    const st = states.get(qqKey)
-    if (!st || st.cooldownUntil === undefined) return 0
-    const r = st.cooldownUntil - Date.now()
-    return r > 0 ? r : 0
-  }
-
-  /** 冷却期结束后的自然失效：到期后第一条消息 feed 时能量已累积为负（活跃群）→ 触发。
-   *  无定时器、无补回——回复只由消息驱动，冷却只保证最小间隔。 */
-
-  // ---------- 回复"在途"标记（2026-08-30 防连发，方向 1） ----------
-  // 场景：冷却起点=回复真正发出后（onReply），但"模型生成完成→实际发送完成"之间存在窗口期，
-  //  窗口期内消息 inCooldown=false 且能量未重置（继承触发前负值）→ 一 feed 就再次触发 → 连发两条。
-  // 修复：promptQueue 入队成功后立即 markInFlight（该群有回复在生成/在途），窗口期消息
-  //  经 index 的 inCooldown||inFlight 检查直接缓冲不触发；回复发出后（onReply）clearInFlight 转正式冷却。
-  // 带 TTL 惰性过期：onReply 异常时不会永久卡回复。
-
-  /** 标记"回复在途"：promptQueue 成功后调用 */
-  function markInFlight(qqKey, ttlMs) {
+  /** promptQueue 入队成功后调用：标记回复在途（生成中窗口）。带 TTL 惰性过期（onReply 异常时兜底）。 */
+  function markBusy(qqKey, ttlMs) {
     const now = Date.now()
     let st = states.get(qqKey)
     if (!st) { st = { energy: opts.range[0], lastTick: now, history: [] }; states.set(qqKey, st) }
-    st.inFlightUntil = now + (ttlMs >= 0 ? ttlMs : (opts.inFlightTtlMs ?? 180000))
+    st.busyUntil = now + (ttlMs >= 0 ? ttlMs : (opts.inFlightTtlMs ?? 180000))
   }
 
-  /** 回复真正发出后调用：清除在途标记（窗口期结束，进入正式冷却） */
-  function clearInFlight(qqKey) {
+  /** 该群当前是否处于回复忙期（入队在途 或 发送后冷却）；未设/过期 = false（到期自然失效） */
+  function inCooldown(qqKey) {
     const st = states.get(qqKey)
-    if (st) st.inFlightUntil = 0
+    if (!st || st.busyUntil === undefined) return false
+    applyDecay(st)
+    return Date.now() < st.busyUntil
   }
 
-  /** 该群是否回复在途（入队后、发出前）；超过 TTL 自动失效 */
-  function inFlight(qqKey) {
+  /** 忙期剩余毫秒（0 = 可回复；供 /能量 指令展示） */
+  function cooldownRemainingMs(qqKey) {
     const st = states.get(qqKey)
-    return !!(st && st.inFlightUntil && Date.now() < st.inFlightUntil)
+    if (!st || st.busyUntil === undefined) return 0
+    const r = st.busyUntil - Date.now()
+    return r > 0 ? r : 0
   }
 
   // ---------- CD 到期补回 pending（2026-08-30，方向：冷却期有消息 → 到期自动回一条） ----------
@@ -300,5 +284,5 @@ export function createEnergyManager({ energy = {}, log = () => {}, resolveName =
     states.clear()
   }
 
-  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, inCooldown, cooldownRemainingMs, lastBotReply, markInFlight, clearInFlight, inFlight, notePending, hasPending, clearPending, pendingInfo, pendingKeys }
+  return { feed, force, forceTo, shouldReply, getContext, reset, getEnergy, stats, dispose, record, recordBotReply, beginCooldown, markBusy, inCooldown, cooldownRemainingMs, lastBotReply, notePending, hasPending, clearPending, pendingInfo, pendingKeys }
 }
