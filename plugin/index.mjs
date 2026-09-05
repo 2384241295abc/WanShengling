@@ -306,6 +306,11 @@ export function apply(ctx, rawConfig = {}) {
       log('info', '[qq-bridge] 禁言中，忽略消息: %s', (OneBotClient.extractText(msg.message) || '（无文字）').slice(0, 40))
       return
     }
+    // 🔒 个人专属锁（config.chatWhitelist，2026-09-06）：非空时只回白名单用户的【私聊】——
+    //    其它任何私聊与全部群消息一律忽略（不 feed/不触发/不观察），"只回某个人的专属 bot"用
+    const _wl = Array.isArray(config.chatWhitelist) && config.chatWhitelist.length
+      ? config.chatWhitelist.map(String) : []
+    if (_wl.length && !(msg.message_type === 'private' && _wl.includes(String(msg.user_id ?? '')))) return
     // 🐞 调试（2026-08-29 临时）：记录消息处理入口状态，诊断"@没反应"
     try {
       const _t = OneBotClient.extractText(msg.message) || ''
