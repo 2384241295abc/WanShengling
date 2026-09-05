@@ -589,7 +589,10 @@ export function apply(ctx, rawConfig = {}) {
    */
   function buildPromptBlocks({ gcfg, qqKey, userId, text, isGroup = true, isAt = false, allowWork = false, fedCurrentMsg = false, askFollowUp = false, atOthers = [], extraNote = '' } = {}) {
     const content = []
-    const persona = buildPersonaPrompt(gcfg)
+    // 🔒 空白人设私聊（config.plainChatUsers 白名单，如"仅与刘刘交流"的个人 bot）：
+    //   该 user_id 的私聊不注入 persona——普通直接对话；群聊与其它私聊不受影响
+    const plainChat = !isGroup && Array.isArray(config.plainChatUsers) && config.plainChatUsers.includes(String(userId ?? ''))
+    const persona = plainChat ? '' : buildPersonaPrompt(gcfg)
     if (persona) content.push({ type: 'text', text: persona })
     if (isGroup) {
       if (config.memoryEnabled) {

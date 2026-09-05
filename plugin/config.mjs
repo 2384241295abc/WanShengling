@@ -41,6 +41,8 @@ export const DEFAULTS = {
   workPrefix: '!',             // 前缀（如 "!查看 DshDesktop 目录"）
   workCwd: '',                 // 工作模式 cwd（空=默认 ~/Documents/DshDesktop）
   workUsers: [],               // 工作模式白名单（数字字符串数组）；空=工作模式关闭(默认)，非空=仅列表内用户可用
+  plainChatUsers: [],          // 私聊空白人设白名单：列表内 user_id 的私聊不注入 persona（空白人设普通对话，
+                               //   "仅与刘刘交流"类个人 bot 用）；群聊不受影响，非列表私聊仍走全局 persona
   allowSelfMessages: false,    // 代理号给自己发消息触发工作指令（需 NapCat 开启推送自身消息）；默认关
 
   // 群聊能量阈值机制（仅群聊生效；私聊不走）
